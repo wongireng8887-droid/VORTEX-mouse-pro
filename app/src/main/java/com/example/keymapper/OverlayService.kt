@@ -106,7 +106,6 @@ class OverlayService : Service() {
         maps = Store.load(this)
         Store.prefs(this).registerOnSharedPreferenceChangeListener(listener)
         ShizukuBridge.init()
-        ShizukuBridge.tryBind()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -115,8 +114,8 @@ class OverlayService : Service() {
             shutdown()
         } else {
             showBubble()
-            val ready = ShizukuBridge.inject != null
-            Toast.makeText(this, if (ready) "Siap. Tekan tombol keyboard / gerakkan mouse." else "Shizuku belum tersambung, sentuhan belum jalan.",
+            val ready = Injector.ready
+            Toast.makeText(this, if (ready) "Siap. Tekan tombol keyboard / gerakkan mouse." else "Belum terhubung. Buka aplikasi, pilih cara sambung.",
                 Toast.LENGTH_LONG).show()
         }
         return START_NOT_STICKY
@@ -280,11 +279,12 @@ class OverlayService : Service() {
         }
         desired = t
         hud?.invalidate()
-        if (t.isNotEmpty() && ShizukuBridge.inject == null) {
+        if (t.isNotEmpty() && !Injector.ready) {
+            Injector.autoStart(this, null)
             val now = System.currentTimeMillis()
             if (now - lastWarn > 3000) {
                 lastWarn = now
-                Toast.makeText(this, "Shizuku belum tersambung. Sentuhan tidak jalan.", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Belum terhubung. Sentuhan tidak jalan.", Toast.LENGTH_SHORT).show()
             }
         }
         applyShizuku()
@@ -294,7 +294,7 @@ class OverlayService : Service() {
         val gone = live.keys.filter { it !in desired }
         for (id in gone) {
             val cur = live[id] ?: continue
-            ShizukuBridge.touch(2, cur.first, cur.second.x, cur.second.y)
+            Injector.touch(2, cur.first, cur.second.x, cur.second.y)
             live.remove(id)
         }
         for ((id, st) in desired) {
@@ -303,12 +303,12 @@ class OverlayService : Service() {
             val cur = live[id]
             if (cur == null) {
                 val slot = (0..8).first { sl -> live.values.none { it.first == sl } }
-                if (ShizukuBridge.touch(0, slot, start.x, start.y)) {
-                    if (target.x != start.x || target.y != start.y) ShizukuBridge.touch(1, slot, target.x, target.y)
+                if (Injector.touch(0, slot, start.x, start.y)) {
+                    if (target.x != start.x || target.y != start.y) Injector.touch(1, slot, target.x, target.y)
                     live[id] = slot to PointF(target.x, target.y)
                 }
             } else if (cur.second.x != target.x || cur.second.y != target.y) {
-                ShizukuBridge.touch(1, cur.first, target.x, target.y)
+                Injector.touch(1, cur.first, target.x, target.y)
                 live[id] = cur.first to PointF(target.x, target.y)
             }
         }
@@ -611,7 +611,7 @@ class OverlayService : Service() {
         bubble = null
         updateCapture()
         hideHud()
-        ShizukuBridge.releaseAll(); live.clear()
+        Injector.releaseAll(); live.clear()
     }
 
     private fun menuItem(t: String, a: () -> Unit): TextView = chip(t, a).apply {
@@ -628,10 +628,10 @@ class OverlayService : Service() {
             setPadding(dp(8), dp(6), dp(8), dp(8))
             background = rounded(0xF2111A17.toInt(), 14)
         }
-        val shz = if (ShizukuBridge.inject != null) "OK" else "putus"
+        val shz = if (Injector.ready) "OK (" + Injector.mode + ")" else "putus"
         val mouse = if (capture?.hasPointerCapture() == true) "OK" else "belum"
         col.addView(TextView(this).apply {
-            text = "Shizuku: $shz | Mouse: $mouse\nTerakhir: $lastEvt"
+            text = "Sambungan: $shz | Mouse: $mouse\nTerakhir: $lastEvt"
             setTextColor(0xFF9FB3AB.toInt()); textSize = 11f
         })
         col.addView(menuItem(if (enabledMap) "Mapping: ON" else "Mapping: OFF") { setMapping(!enabledMap); closePanel() })
@@ -639,11 +639,6 @@ class OverlayService : Service() {
             hudVisible = !hudVisible; applyHudVisibility(); closePanel()
         })
         col.addView(menuItem("Edit tombol") { closePanel(); openEditor() })
-        col.addView(menuItem("Tes sentuhan") {
-            val err = ShizukuBridge.selfTest()
-            Toast.makeText(this, if (err == null) "Tes sentuhan: OK" else "Gagal: $err", Toast.LENGTH_LONG).show()
-            closePanel()
-        })
         col.addView(menuItem("Sembunyikan") { shutdown() })
         try { wm?.addView(col, lp); panel = col } catch (e: Exception) {}
     }

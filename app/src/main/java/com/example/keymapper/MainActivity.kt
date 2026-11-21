@@ -19,6 +19,7 @@ import android.view.Gravity
 import android.view.InputDevice
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.ArrayAdapter
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
@@ -58,15 +59,40 @@ class MainActivity : Activity() {
         super.onCreate(b)
         window.statusBarColor = BG
         window.navigationBarColor = BG
+        if (Build.VERSION.SDK_INT >= 28) {
+            val a = window.attributes
+            a.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            window.attributes = a
+        }
+        @Suppress("DEPRECATION")
+        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+            View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+            View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(BG) }
+        root.setOnApplyWindowInsetsListener { v, ins ->
+            var l = 0
+            var r = 0
+            if (Build.VERSION.SDK_INT >= 28) {
+                val c = ins.displayCutout
+                if (c != null) { l = c.safeInsetLeft; r = c.safeInsetRight }
+            }
+            v.setPadding(l, 0, r, 0)
+            ins
+        }
         root.addView(topBar())
         content = FrameLayout(this)
         root.addView(content, LinearLayout.LayoutParams(M, 0, 1f))
         root.addView(bottomNav())
         setContentView(root)
         select(0)
+
         ShizukuBridge.init()
-        ShizukuBridge.onChange = { runOnUiThread { if (tab == 2) select(2) else updateStatus() } }
+        val refresh = { runOnUiThread { if (tab == 2) select(2) else updateStatus() } }
+        ShizukuBridge.onChange = refresh
+        Injector.onChange = refresh
+        PairHelper.onChange = refresh
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 7)
@@ -76,7 +102,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         (getSystemService(Context.INPUT_SERVICE) as InputManager).registerInputDeviceListener(inputListener, null)
-        ShizukuBridge.tryBind()
+        Injector.autoStart(this, null)
         select(tab)
     }
 
@@ -139,42 +165,40 @@ class MainActivity : Activity() {
 
     // ---------- top bar & nav ----------
     private fun chip() = TextView(this).apply {
-        textSize = 12f; typeface = Typeface.DEFAULT_BOLD
-        setPadding(dp(14), dp(8), dp(14), dp(8))
+        textSize = 11f; typeface = Typeface.DEFAULT_BOLD
+        setPadding(dp(12), dp(6), dp(12), dp(6))
+        maxLines = 1
     }
 
     private fun setChip(tv: TextView, text: String, ok: Boolean) {
         tv.text = text
-        tv.setIcon(if (ok) R.drawable.ic_dot else R.drawable.ic_ring, if (ok) MINT else MUTED, 10)
+        tv.setIcon(if (ok) R.drawable.ic_dot else R.drawable.ic_ring, if (ok) MINT else MUTED, 9)
         tv.setTextColor(if (ok) Color.WHITE else MUTED)
         tv.background = rounded(if (ok) GREEN else CARD, 20)
     }
 
     private fun updateStatus() {
-        val mouse = hasMouse()
-        val kb = hasKeyboard()
-        setChip(chipMouse, if (mouse) "Mouse tersambung" else "Mouse tidak tersambung", mouse)
-        setChip(chipKb, if (kb) "Keyboard tersambung" else "Keyboard tidak tersambung", kb)
-        val z = ShizukuBridge.state(this) == 4
-        setChip(chipSvc, if (z) "Shizuku tersambung" else "Shizuku belum siap", z)
+        setChip(chipMouse, "Mouse", hasMouse())
+        setChip(chipKb, "Keyboard", hasKeyboard())
+        setChip(chipSvc, if (Injector.ready) "Terhubung" else "Belum terhubung", Injector.ready)
     }
 
     private fun topBar(): View {
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(24), dp(12), dp(24), dp(6))
+            setPadding(dp(20), dp(10), dp(20), dp(6))
         }
         val logo = TextView(this).apply {
-            text = "V"; textSize = 22f; setTextColor(MINT); typeface = Typeface.DEFAULT_BOLD
+            text = "V"; textSize = 20f; setTextColor(MINT); typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL; setColor(0xFF12201B.toInt()); setStroke(dp(3), MINT)
             }
         }
-        bar.addView(logo, LinearLayout.LayoutParams(dp(44), dp(44)))
-        val titles = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, 0, 0) }
-        titles.addView(label("Vortex Mouse Pro", 18f, Color.WHITE, true))
-        titles.addView(label("Keyboard & mouse untuk game Android", 11f, MUTED, false))
+        bar.addView(logo, LinearLayout.LayoutParams(dp(40), dp(40)))
+        val titles = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(10), 0, 0, 0) }
+        titles.addView(label("Vortex Mouse Pro", 17f, Color.WHITE, true).apply { maxLines = 1 })
+        titles.addView(label("Keyboard dan mouse untuk game", 11f, MUTED, false).apply { maxLines = 1 })
         bar.addView(titles, LinearLayout.LayoutParams(0, W, 1f))
         chipMouse = chip(); chipKb = chip(); chipSvc = chip()
         listOf(chipMouse, chipKb, chipSvc).forEach {
@@ -189,11 +213,11 @@ class MainActivity : Activity() {
         navItems = names.mapIndexed { i, n ->
             LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
-                setPadding(0, dp(12), 0, dp(12))
+                setPadding(0, dp(10), 0, dp(10))
                 setOnClickListener { select(i) }
                 addView(ImageView(context).apply { setImageResource(navIcons[i]) }, LinearLayout.LayoutParams(dp(20), dp(20)))
                 addView(TextView(context).apply {
-                    text = n; textSize = 15f; typeface = Typeface.DEFAULT_BOLD; setPadding(dp(8), 0, 0, 0)
+                    text = n; textSize = 14f; typeface = Typeface.DEFAULT_BOLD; setPadding(dp(8), 0, 0, 0)
                 })
             }
         }
@@ -215,25 +239,22 @@ class MainActivity : Activity() {
         updateStatus()
     }
 
-    // ---------- kesiapan ----------
-    private fun ready(): Boolean = Settings.canDrawOverlays(this) && ShizukuBridge.state(this) == 4
-
     // ---------- tab: game ----------
     private fun gamesView(): View {
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val top = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         top.addView(pill("Tambah Game", CARD) { addGame() }.also { it.setIcon(R.drawable.ic_add, MINT, 16) },
-            LinearLayout.LayoutParams(W, W).apply { setMargins(dp(24), dp(6), 0, dp(6)) })
-        if (!ready()) {
-            top.addView(pill("Belum siap main - buka Persiapan", 0xFF7A4B06.toInt()) { select(2) }
+            LinearLayout.LayoutParams(W, W).apply { setMargins(dp(20), dp(4), 0, dp(4)) })
+        if (!Injector.ready) {
+            top.addView(pill("Belum terhubung - pilih cara sambung", 0xFF7A4B06.toInt()) { select(2) }
                 .also { it.setIcon(R.drawable.ic_warning, AMBER, 16) },
-                LinearLayout.LayoutParams(W, W).apply { setMargins(dp(12), dp(6), 0, dp(6)) })
+                LinearLayout.LayoutParams(W, W).apply { setMargins(dp(10), dp(4), 0, dp(4)) })
         }
         col.addView(top)
         val scroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(24), 0, dp(24), dp(10))
+            setPadding(dp(20), 0, dp(20), dp(10))
         }
         val games = Store.games(this)
         if (games.isEmpty()) {
@@ -241,7 +262,7 @@ class MainActivity : Activity() {
         }
         games.forEach { pkg ->
             gameCard(pkg)?.let {
-                row.addView(it, LinearLayout.LayoutParams(dp(190), M).apply { rightMargin = dp(16) })
+                row.addView(it, LinearLayout.LayoutParams(dp(180), M).apply { rightMargin = dp(14) })
             }
         }
         scroll.addView(row, FrameLayout.LayoutParams(W, M))
@@ -265,7 +286,7 @@ class MainActivity : Activity() {
             }
         }
         val icon = ImageView(this).apply { setImageDrawable(pm.getApplicationIcon(info)) }
-        card.addView(icon, LinearLayout.LayoutParams(dp(56), dp(56)).apply { topMargin = dp(14) })
+        card.addView(icon, LinearLayout.LayoutParams(dp(52), dp(52)).apply { topMargin = dp(12) })
         card.addView(label(pm.getApplicationLabel(info).toString(), 14f, Color.WHITE, true).apply {
             gravity = Gravity.CENTER; maxLines = 2; setPadding(dp(8), dp(8), dp(8), 0)
         })
@@ -305,21 +326,25 @@ class MainActivity : Activity() {
             .setNegativeButton("Batal", null).show()
     }
 
-    private fun launchGame(pkg: String) {
-        if (!Settings.canDrawOverlays(this)) {
-            toast("Izinkan 'Tampilkan di atas aplikasi lain' dulu"); select(2); return
-        }
-        if (ShizukuBridge.state(this) != 4) {
-            toast("Sambungkan Shizuku dulu (debug nirkabel). Ikuti langkah di Persiapan."); select(2); return
-        }
-        val err = ShizukuBridge.selfTest()
-        if (err != null) {
-            toast("Tes sentuhan gagal: $err"); select(2); return
-        }
+    private fun startGame(pkg: String) {
         val i = packageManager.getLaunchIntentForPackage(pkg)
         if (i == null) { toast("Game tidak bisa dibuka"); return }
         startForegroundService(Intent(this, OverlayService::class.java).setAction(OverlayService.ACTION_SHOW))
         startActivity(i)
+    }
+
+    private fun launchGame(pkg: String) {
+        if (!Settings.canDrawOverlays(this)) {
+            toast("Izinkan 'Tampilkan di atas aplikasi lain' dulu"); select(2); return
+        }
+        if (Injector.ready) { startGame(pkg); return }
+        toast("Menyambung...")
+        Injector.autoStart(this) { err ->
+            runOnUiThread {
+                if (err == null) startGame(pkg)
+                else { toast(err); select(2) }
+            }
+        }
     }
 
     // ---------- tab: pemetaan ----------
@@ -329,7 +354,7 @@ class MainActivity : Activity() {
     }
 
     private fun mapView(): View {
-        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(8), dp(24), dp(16)) }
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), dp(16)) }
         col.addView(label("Pemetaan tombol", 18f, Color.WHITE, true))
         col.addView(label("Di dalam game: tap bubble V, pilih Edit tombol, lalu Template atau Tambah.", 12f, MUTED, false))
         val maps = Store.load(this)
@@ -349,102 +374,137 @@ class MainActivity : Activity() {
         return ScrollView(this).apply { addView(col) }
     }
 
-    // ---------- tab: pengaturan / persiapan ----------
-    private fun settingRow(title: String, desc: String, ok: Boolean, action: String, onClick: () -> Unit): View {
-        val r = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            background = rounded(CARD, 14); setPadding(dp(16), dp(12), dp(16), dp(12))
+    // ---------- tab: pengaturan ----------
+    private fun connectDone(err: String?) {
+        runOnUiThread {
+            toast(if (err == null) "Terhubung lewat ${Injector.mode}. Siap main." else "Gagal: $err")
+            select(2)
         }
-        val t = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        t.addView(label(title, 15f, Color.WHITE, true).also {
-            it.setIcon(if (ok) R.drawable.ic_check else R.drawable.ic_warning, if (ok) MINT else AMBER, 18)
-        })
-        t.addView(label(desc, 12f, MUTED, false))
-        r.addView(t, LinearLayout.LayoutParams(0, W, 1f))
-        r.addView(pill(action, GREEN, onClick))
-        return r
     }
 
-    private fun onShizukuAction(s: Int) {
-        when (s) {
-            0 -> startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://shizuku.rikka.app/download/")))
-            1 -> {
+    private fun optionCard(title: String, status: String, ok: Boolean, desc: String, buttons: List<View>): View {
+        val c = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = rounded(CARD, 16)
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+        }
+        c.addView(label(title, 15f, Color.WHITE, true).also {
+            it.setIcon(if (ok) R.drawable.ic_check else R.drawable.ic_warning, if (ok) MINT else AMBER, 18)
+        })
+        c.addView(label(status, 12f, if (ok) MINT else AMBER, true).apply { setPadding(0, dp(4), 0, 0) })
+        c.addView(label(desc, 12f, MUTED, false).apply { setPadding(0, dp(6), 0, dp(8)) })
+        val br = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        buttons.forEachIndexed { i, b ->
+            br.addView(b, LinearLayout.LayoutParams(W, W).apply { if (i > 0) leftMargin = dp(8) })
+        }
+        c.addView(br)
+        return c
+    }
+
+    private fun adbCard(): View {
+        val on = Injector.ready && Injector.mode == "ADB"
+        val status = when {
+            on -> "Tersambung"
+            PairHelper.status.isNotEmpty() -> PairHelper.status
+            AdbBackend.paired(this) -> "Sudah dipasangkan. Tap Sambungkan."
+            else -> "Belum dipasangkan"
+        }
+        val btns = listOf(
+            pill("Mulai Pairing", GREEN) {
+                PairHelper.start(this); openWirelessDebug()
+            },
+            pill("Sambungkan", 0xFF1F3D33.toInt()) {
+                toast("Menyambung...")
+                Injector.connect(this, "ADB") { connectDone(it) }
+            })
+        return optionCard("Pairing Debug Nirkabel", status, on,
+            "Tanpa aplikasi lain. Tap Mulai Pairing, di layar Debugging nirkabel pilih Pair device with pairing code, lalu tarik notifikasi dan ketik kodenya.",
+            btns)
+    }
+
+    private fun shizukuCard(): View {
+        val s = ShizukuBridge.state(this)
+        val on = Injector.ready && Injector.mode == "Shizuku"
+        val status = when {
+            on -> "Tersambung"
+            s == 0 -> "Shizuku belum terpasang"
+            s == 1 -> "Shizuku belum jalan"
+            s == 2 -> "Perlu izin Shizuku"
+            else -> "Shizuku siap. Tap Sambungkan."
+        }
+        val main = when (s) {
+            0 -> pill("Unduh Shizuku", GREEN) {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://shizuku.rikka.app/download/")))
+            }
+            1 -> pill("Buka Shizuku", GREEN) {
                 val i = packageManager.getLaunchIntentForPackage(ShizukuBridge.PKG)
                 if (i != null) startActivity(i) else toast("Buka aplikasi Shizuku dari layar utama")
             }
-            2 -> ShizukuBridge.requestPermission()
-            else -> { ShizukuBridge.tryBind(); select(2) }
+            2 -> pill("Izinkan", GREEN) { ShizukuBridge.requestPermission() }
+            else -> pill("Sambungkan", GREEN) {
+                toast("Menyambung...")
+                Injector.connect(this, "Shizuku") { connectDone(it) }
+            }
         }
-    }
-
-    private fun runTouchTest() {
-        val err = ShizukuBridge.selfTest()
-        toast(if (err == null) "Tes sentuhan: OK" else "Tes sentuhan gagal: $err")
-        select(2)
+        return optionCard("Aktifkan lewat Shizuku", status, on,
+            "Nyalakan Shizuku (debug nirkabel atau root), lalu izinkan aplikasi ini.", listOf(main))
     }
 
     private fun settingsView(): View {
-        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(8), dp(24), dp(16)) }
-        val lp = { LinearLayout.LayoutParams(M, W).apply { topMargin = dp(8) } }
-        val zs = ShizukuBridge.state(this)
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), dp(16)) }
+        val gap = { LinearLayout.LayoutParams(M, W).apply { topMargin = dp(10) } }
 
-        col.addView(label("Persiapan sebelum main", 18f, Color.WHITE, true))
-        col.addView(label("Semua langkah harus centang sebelum Mulai Game bisa dipakai.", 12f, MUTED, false))
-
-        col.addView(settingRow("1. Tampilkan di atas aplikasi lain",
-            "Untuk bubble, tombol di layar, dan menangkap keyboard/mouse.",
-            Settings.canDrawOverlays(this), "Buka") { openOverlaySettings() }, lp())
-
-        val s2 = when (zs) {
-            0 -> "Shizuku belum terpasang. Unduh dulu."
-            1 -> "Shizuku belum jalan. Aktifkan Debugging nirkabel, buka Shizuku, lalu Pairing dan Mulai."
-            else -> "Shizuku berjalan."
+        val on = Injector.ready
+        val big = label(if (on) "Terhubung lewat ${Injector.mode}. Siap main." else "Belum terhubung. Pilih salah satu cara di bawah.",
+            14f, Color.WHITE, true).apply {
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            background = rounded(if (on) GREEN else CARD, 14)
         }
-        col.addView(settingRow("2. Shizuku berjalan (debug nirkabel)", s2, zs >= 2,
-            when (zs) { 0 -> "Unduh"; 1 -> "Buka"; else -> "Segarkan" }) { onShizukuAction(if (zs >= 2) 3 else zs) }, lp())
+        big.setIcon(if (on) R.drawable.ic_check else R.drawable.ic_warning, if (on) MINT else AMBER, 18)
+        col.addView(big)
 
-        col.addView(settingRow("3. Izin Shizuku untuk aplikasi ini",
-            "Izinkan Vortex Mouse Pro memakai Shizuku.", zs >= 3, "Izinkan") { onShizukuAction(2) }, lp())
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; isBaselineAligned = false }
+        row.addView(adbCard(), LinearLayout.LayoutParams(0, M, 1f).apply { rightMargin = dp(5) })
+        row.addView(shizukuCard(), LinearLayout.LayoutParams(0, M, 1f).apply { leftMargin = dp(5) })
+        col.addView(row, gap())
 
-        col.addView(settingRow("4. Layanan sentuhan tersambung",
-            if (zs == 4) "Tersambung. Sentuhan disuntik multi-touch." else "Menunggu sambungan ke Shizuku.",
-            zs == 4, "Segarkan") { onShizukuAction(3) }, lp())
-
-        col.addView(settingRow("5. Tes sentuhan",
-            "Memastikan injeksi sentuhan benar-benar jalan.",
-            ShizukuBridge.lastTestOk, "Tes") { runTouchTest() }, lp())
-
-        col.addView(label("\nAlat", 18f, Color.WHITE, true))
-        col.addView(settingRow("Debugging nirkabel",
-            "Buka pengaturannya, nyalakan, lalu pairing lewat aplikasi Shizuku.",
-            Settings.Global.getInt(contentResolver, "adb_wifi_enabled", 0) == 1, "Buka") { openWirelessDebug() }, lp())
-        col.addView(settingRow("Tes keyboard dan mouse",
-            "Cek apakah HP menerima tombol keyboard, gerak mouse, dan klik mouse.",
-            hasKeyboard() || hasMouse(), "Buka") { startActivity(Intent(this, TestActivity::class.java)) }, lp())
+        val overlayOk = Settings.canDrawOverlays(this)
+        val ov = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            background = rounded(CARD, 14); setPadding(dp(16), dp(10), dp(16), dp(10))
+        }
+        val ovT = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        ovT.addView(label("Tampilkan di atas aplikasi lain", 14f, Color.WHITE, true).also {
+            it.setIcon(if (overlayOk) R.drawable.ic_check else R.drawable.ic_warning, if (overlayOk) MINT else AMBER, 18)
+        })
+        ovT.addView(label("Untuk bubble, tombol di layar, dan menangkap keyboard/mouse.", 12f, MUTED, false))
+        ov.addView(ovT, LinearLayout.LayoutParams(0, W, 1f))
+        ov.addView(pill(if (overlayOk) "Aktif" else "Izinkan", GREEN) { openOverlaySettings() })
+        col.addView(ov, gap())
 
         val sw = Switch(this).apply {
             isChecked = OverlayService.instance?.isBubbleShown() == true
-            setOnCheckedChangeListener { _, on ->
-                if (on) {
-                    if (!ready()) { toast("Selesaikan persiapan dulu"); isChecked = false }
+            setOnCheckedChangeListener { _, checked ->
+                if (checked) {
+                    if (!Settings.canDrawOverlays(this@MainActivity)) { toast("Izinkan tampil di atas aplikasi lain dulu"); isChecked = false }
                     else startForegroundService(Intent(this@MainActivity, OverlayService::class.java).setAction(OverlayService.ACTION_SHOW))
                 } else {
                     startService(Intent(this@MainActivity, OverlayService::class.java).setAction(OverlayService.ACTION_HIDE))
                 }
             }
         }
-        val r = LinearLayout(this).apply {
+        val bb = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            background = rounded(CARD, 14); setPadding(dp(16), dp(12), dp(16), dp(12))
+            background = rounded(CARD, 14); setPadding(dp(16), dp(10), dp(16), dp(10))
         }
-        val t = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        t.addView(label("Bubble melayang", 15f, Color.WHITE, true))
-        t.addView(label("Tombol V di atas layar: ON/OFF mapping, edit tombol, tes sentuhan.", 12f, MUTED, false))
-        r.addView(t, LinearLayout.LayoutParams(0, W, 1f)); r.addView(sw)
-        col.addView(r, lp())
+        val bt = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        bt.addView(label("Bubble melayang", 14f, Color.WHITE, true))
+        bt.addView(label("Tombol V di atas layar: ON/OFF mapping dan edit tombol.", 12f, MUTED, false))
+        bb.addView(bt, LinearLayout.LayoutParams(0, W, 1f)); bb.addView(sw)
+        col.addView(bb, gap())
 
-        col.addView(label("\nTips: tekan F8 di keyboard untuk mematikan mapping. Untuk menyalakan lagi, tap bubble V di layar.",
-            12f, MUTED, false))
+        col.addView(label("Tips: F8 di keyboard mematikan mapping. Untuk menyalakan lagi, tap bubble V.", 12f, MUTED, false)
+            .apply { setPadding(0, dp(10), 0, 0) })
         return ScrollView(this).apply { addView(col) }
     }
 }
