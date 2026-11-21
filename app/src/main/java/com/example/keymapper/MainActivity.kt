@@ -329,6 +329,7 @@ class MainActivity : Activity() {
     private fun startGame(pkg: String) {
         val i = packageManager.getLaunchIntentForPackage(pkg)
         if (i == null) { toast("Game tidak bisa dibuka"); return }
+        Store.setCurrentGame(this, pkg)
         startForegroundService(Intent(this, OverlayService::class.java).setAction(OverlayService.ACTION_SHOW))
         startActivity(i)
     }
@@ -347,6 +348,66 @@ class MainActivity : Activity() {
         }
     }
 
+    // ---------- profil keymap per game ----------
+    private fun profileBar(col: LinearLayout) {
+        val game = Store.currentGame(this)
+        if (game.isEmpty()) {
+            col.addView(label("Mulai game dari tab Game dulu, setelah itu profil keymap dibuat per game.", 12f, AMBER, false),
+                LinearLayout.LayoutParams(W, W).apply { topMargin = dp(8) })
+            return
+        }
+        val gname = try {
+            packageManager.getApplicationLabel(packageManager.getApplicationInfo(game, 0)).toString()
+        } catch (e: Exception) { game }
+        val names = Store.profiles(this, game)
+        val active = Store.activeProfile(this, game)
+        col.addView(label("Game: $gname", 14f, MINT, true), LinearLayout.LayoutParams(W, W).apply { topMargin = dp(10) })
+        val scroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        names.forEach { n ->
+            row.addView(pill(n, if (n == active) GREEN else CARD) {
+                Store.setActiveProfile(this, game, n); select(1)
+            }, LinearLayout.LayoutParams(W, W).apply { rightMargin = dp(8) })
+        }
+        row.addView(pill("+ Profil", CARD) {
+            askProfileName("Profil baru (disalin dari profil aktif)", "") { n ->
+                if (Store.createProfile(this, game, n)) select(1) else toast("Nama kosong, terlalu panjang, atau sudah dipakai")
+            }
+        }, LinearLayout.LayoutParams(W, W))
+        scroll.addView(row)
+        col.addView(scroll, LinearLayout.LayoutParams(M, W).apply { topMargin = dp(8) })
+        val act = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        act.addView(pill("Ganti nama", CARD) {
+            askProfileName("Ganti nama profil", active) { n ->
+                if (Store.renameProfile(this, game, active, n)) select(1) else toast("Nama kosong, terlalu panjang, atau sudah dipakai")
+            }
+        }, LinearLayout.LayoutParams(W, W).apply { rightMargin = dp(8) })
+        act.addView(pill("Hapus profil", 0xFF5B2A2A.toInt()) {
+            if (names.size <= 1) {
+                toast("Minimal harus ada satu profil")
+            } else {
+                AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                    .setTitle("Hapus profil \"$active\"?")
+                    .setPositiveButton("Hapus") { _, _ -> Store.deleteProfile(this, game, active); select(1) }
+                    .setNegativeButton("Batal", null).show()
+            }
+        }, LinearLayout.LayoutParams(W, W))
+        col.addView(act, LinearLayout.LayoutParams(W, W).apply { topMargin = dp(8) })
+    }
+
+    private fun askProfileName(title: String, initial: String, onOk: (String) -> Unit) {
+        val et = android.widget.EditText(this)
+        et.setText(initial)
+        et.setSingleLine(true)
+        et.setTextColor(Color.WHITE)
+        et.setHintTextColor(MUTED)
+        et.setSelection(et.text.length)
+        AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+            .setTitle(title).setView(et)
+            .setPositiveButton("Simpan") { _, _ -> onOk(et.text.toString()) }
+            .setNegativeButton("Batal", null).show()
+    }
+
     // ---------- tab: pemetaan ----------
     private fun fn(kind: String) = when (kind) {
         "TAP" -> "Tombol"; "UP" -> "Joystick atas"; "DOWN" -> "Joystick bawah"
@@ -357,6 +418,7 @@ class MainActivity : Activity() {
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), dp(16)) }
         col.addView(label("Pemetaan tombol", 18f, Color.WHITE, true))
         col.addView(label("Di dalam game: tap bubble V, pilih Edit tombol, lalu Template atau Tambah.", 12f, MUTED, false))
+        profileBar(col)
         val maps = Store.load(this)
         if (maps.isEmpty()) col.addView(label("\nBelum ada pemetaan.", 14f, MUTED, false))
         maps.forEach { m ->

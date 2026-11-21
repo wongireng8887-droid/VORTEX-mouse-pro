@@ -638,6 +638,20 @@ class OverlayService : Service() {
         col.addView(menuItem(if (hudVisible) "Tombol di layar: ON" else "Tombol di layar: OFF") {
             hudVisible = !hudVisible; applyHudVisibility(); closePanel()
         })
+        val game = Store.currentGame(this)
+        if (game.isNotEmpty()) {
+            col.addView(menuItem("Profil: " + Store.activeProfile(this, game)) {
+                val names = Store.profiles(this, game)
+                if (names.size < 2) {
+                    Toast.makeText(this, "Baru ada 1 profil. Tambah di tab Pemetaan.", Toast.LENGTH_SHORT).show()
+                } else {
+                    val next = names[(names.indexOf(Store.activeProfile(this, game)) + 1) % names.size]
+                    Store.setActiveProfile(this, game, next)
+                    Toast.makeText(this, "Profil: $next", Toast.LENGTH_SHORT).show()
+                }
+                closePanel()
+            })
+        }
         col.addView(menuItem("Edit tombol") { closePanel(); openEditor() })
         col.addView(menuItem("Sembunyikan") { shutdown() })
         try { wm?.addView(col, lp); panel = col } catch (e: Exception) {}
