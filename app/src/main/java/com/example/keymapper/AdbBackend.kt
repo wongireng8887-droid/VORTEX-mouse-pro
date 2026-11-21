@@ -4,24 +4,14 @@ import android.content.Context
 import android.os.Build
 import android.provider.Settings
 import io.github.muntashirakon.adb.AbsAdbConnectionManager
-import sun.security.x509.AlgorithmId
-import sun.security.x509.CertificateAlgorithmId
-import sun.security.x509.CertificateExtensions
-import sun.security.x509.CertificateIssuerName
-import sun.security.x509.CertificateSerialNumber
-import sun.security.x509.CertificateSubjectName
-import sun.security.x509.CertificateValidity
-import sun.security.x509.CertificateVersion
-import sun.security.x509.CertificateX509Key
-import sun.security.x509.KeyIdentifier
-import sun.security.x509.PrivateKeyUsageExtension
-import sun.security.x509.SubjectKeyIdentifierExtension
-import sun.security.x509.X500Name
-import sun.security.x509.X509CertImpl
-import sun.security.x509.X509CertInfo
+import org.bouncycastle.asn1.x500.X500Name
+import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
+import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder
+import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.IOException
+import java.math.BigInteger
 import java.security.KeyFactory
 import java.security.KeyPairGenerator
 import java.security.PrivateKey
@@ -57,29 +47,18 @@ class AdbMgr(private val ctx: Context) : AbsAdbConnectionManager() {
             val kp = kpg.generateKeyPair()
             val publicKey = kp.public
             val privateKey = kp.private
-            val algorithmName = "SHA512withRSA"
             val notBefore = Date()
             val notAfter = Date(System.currentTimeMillis() + 3650L * 86400000L)
-            val exts = CertificateExtensions()
-            exts.set("SubjectKeyIdentifier", SubjectKeyIdentifierExtension(KeyIdentifier(publicKey).identifier))
             val x500 = X500Name("CN=VortexMousePro")
-            exts.set("PrivateKeyUsage", PrivateKeyUsageExtension(notBefore, notAfter))
-            val info = X509CertInfo()
-            info.set("version", CertificateVersion(2))
-            info.set("serialNumber", CertificateSerialNumber(Random().nextInt() and Int.MAX_VALUE))
-            info.set("algorithmID", CertificateAlgorithmId(AlgorithmId.get(algorithmName)))
-            info.set("subject", CertificateSubjectName(x500))
-            info.set("key", CertificateX509Key(publicKey))
-            info.set("validity", CertificateValidity(notBefore, notAfter))
-            info.set("issuer", CertificateIssuerName(x500))
-            info.set("extensions", exts)
-            val impl = X509CertImpl(info)
-            impl.sign(privateKey, algorithmName)
+            val serial = BigInteger.valueOf(Random().nextInt().toLong() and 0x7fffffffL)
+            val builder = JcaX509v3CertificateBuilder(x500, serial, notBefore, notAfter, x500, publicKey)
+            val signer = JcaContentSignerBuilder("SHA512withRSA").build(privateKey)
+            val x509 = JcaX509CertificateConverter().getCertificate(builder.build(signer))
             pk = privateKey
-            cert = impl
+            cert = x509
             try {
                 kf.writeBytes(privateKey.encoded)
-                cf.writeBytes(impl.encoded)
+                cf.writeBytes(x509.encoded)
             } catch (e: Exception) {}
         }
     }
