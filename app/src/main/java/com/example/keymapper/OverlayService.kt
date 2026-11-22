@@ -84,7 +84,8 @@ class OverlayService : Service() {
     // overlay
     private var wm: WindowManager? = null
     private var bubble: View? = null
-    private var panel: LinearLayout? = null
+    private var panel: View? = null
+    private var panelClosedAt = 0L
     private var editor: EditorView? = null
     private var hud: MapCanvas? = null
     private var capture: CaptureView? = null
@@ -669,7 +670,8 @@ class OverlayService : Service() {
                     }
                     MotionEvent.ACTION_UP -> if (!moved) {
                         if (editor != null) closeEditor()
-                        else if (panel == null) openPanel() else closePanel()
+                        else if (panel != null) closePanel()
+                        else if (System.currentTimeMillis() - panelClosedAt > 350) openPanel()
                     }
                 }
                 return true
@@ -797,54 +799,227 @@ class OverlayService : Service() {
         layoutParams = LinearLayout.LayoutParams(MP, WC).apply { topMargin = dp(4) }
     }
 
-    private fun openPanel() {
-        val lp = WindowManager.LayoutParams(WC, WC, overlayType(),
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT).apply {
-            gravity = Gravity.TOP or Gravity.START; x = bubbleX + dp(58); y = bubbleY
+    // ---------- menu samping (tap logo) ----------
+    private inner class PanelRoot(c: Context) : FrameLayout(c) {
+        override fun onTouchEvent(e: MotionEvent): Boolean {
+            if (e.action == MotionEvent.ACTION_OUTSIDE) { closePanel(); return true }
+            return super.onTouchEvent(e)
         }
-        val col = LinearLayout(this).apply {
+    }
+
+    private inner class NebulaTile(c: Context) : LinearLayout(c) {
+        var lockIcon: android.graphics.drawable.Drawable? = null
+        private val bp = Paint(Paint.ANTI_ALIAS_FLAG)
+
+        init {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(8), dp(6), dp(8), dp(8))
-            background = rounded(0xF2111A17.toInt(), 14)
+            gravity = Gravity.CENTER
+            setWillNotDraw(false)
         }
+
+        override fun dispatchDraw(cv: Canvas) {
+            super.dispatchDraw(cv)
+            val w = width.toFloat()
+            val h = height.toFloat()
+            val s = dp(10).toFloat()
+            bp.style = Paint.Style.STROKE
+            bp.strokeWidth = dp(2).toFloat()
+            bp.color = 0xFFC3CCC8.toInt()
+            // siku di dua sudut bawah
+            cv.drawLine(0f, h - 1f, s, h - 1f, bp)
+            cv.drawLine(1f, h, 1f, h - s, bp)
+            cv.drawLine(w, h - 1f, w - s, h - 1f, bp)
+            cv.drawLine(w - 1f, h, w - 1f, h - s, bp)
+            lockIcon?.let {
+                it.setBounds((w - dp(30)).toInt(), dp(8), (w - dp(12)).toInt(), dp(26))
+                it.draw(cv)
+            }
+        }
+    }
+
+    private fun openPanel() {
+        val (sw, _) = screenSize()
+        val pw = minOf(dp(340), (sw * 0.48f).toInt())
+        val root = PanelRoot(this)
+        val body = LinearLayout(this)
+        body.orientation = LinearLayout.VERTICAL
+        body.background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(0xF5142521.toInt(), 0xF50C1210.toInt()))
+        body.setPadding(dp(14), dp(16), dp(14), dp(8))
+
+        // kepala: logo + nama
+        val head = LinearLayout(this)
+        head.orientation = LinearLayout.HORIZONTAL
+        head.gravity = Gravity.CENTER_VERTICAL
+        val logo = ImageView(this)
+        logo.setImageResource(R.drawable.vortex_mouse_logo)
+        logo.scaleType = ImageView.ScaleType.FIT_CENTER
+        head.addView(logo, LinearLayout.LayoutParams(dp(40), dp(40)))
+        val title = TextView(this)
+        title.text = "Vortex Mouse Pro"
+        title.setTextColor(Color.WHITE)
+        title.textSize = 17f
+        title.typeface = Typeface.DEFAULT_BOLD
+        title.letterSpacing = 0.06f
+        head.addView(title, LinearLayout.LayoutParams(WC, WC).apply { leftMargin = dp(10) })
+        body.addView(head)
+
         val shz = if (Injector.ready) "OK (" + Injector.mode + ")" else "putus"
         val mouse = if (capture?.hasPointerCapture() == true) "OK" else "belum"
-        col.addView(TextView(this).apply {
-            text = "Sambungan: $shz | Mouse: $mouse\nTerakhir: $lastEvt"
-            setTextColor(0xFF9FB3AB.toInt()); textSize = 11f
-        })
-        col.addView(menuItem(if (enabledMap) "Mapping: ON" else "Mapping: OFF") { setMapping(!enabledMap); closePanel() })
-        col.addView(menuItem(if (hudVisible) "Tombol di layar: ON" else "Tombol di layar: OFF") {
-            hudVisible = !hudVisible; applyHudVisibility(); closePanel()
-        })
-        val game = Store.currentGame(this)
-        if (game.isNotEmpty()) {
-            col.addView(menuItem("Profil: " + Store.activeProfile(this, game)) {
-                val names = Store.profiles(this, game)
-                if (names.size < 2) {
-                    Toast.makeText(this, "Baru ada 1 profil. Tambah di tab Pemetaan.", Toast.LENGTH_SHORT).show()
-                } else {
-                    val next = names[(names.indexOf(Store.activeProfile(this, game)) + 1) % names.size]
-                    Store.setActiveProfile(this, game, next)
-                    Toast.makeText(this, "Profil: $next", Toast.LENGTH_SHORT).show()
-                }
-                closePanel()
-            })
+        val st = TextView(this)
+        st.text = "Sambungan: $shz | Mouse: $mouse\nTerakhir: $lastEvt"
+        st.setTextColor(0xFF8FA39B.toInt())
+        st.textSize = 10f
+        body.addView(st, LinearLayout.LayoutParams(MP, WC).apply { topMargin = dp(6); bottomMargin = dp(6) })
+
+        fun rebuild() { closePanel(); openPanel() }
+
+        fun tile(icon: Int, label: String, badge: String? = null, badgeColor: Int = MINT,
+                 locked: Boolean = false, onTap: () -> Unit): View {
+            val t = NebulaTile(this)
+            val bg = GradientDrawable()
+            bg.setColor(0xFF0F1715.toInt())
+            bg.setStroke(dp(1), 0xFF24312D.toInt())
+            t.background = bg
+            val ic = ImageView(this)
+            ic.setImageResource(icon)
+            ic.setColorFilter(if (locked) 0xFF8A9690.toInt() else Color.WHITE)
+            t.addView(ic, LinearLayout.LayoutParams(dp(30), dp(30)))
+            if (badge != null) {
+                val bt = TextView(this)
+                bt.text = badge
+                bt.setTextColor(badgeColor)
+                bt.textSize = 10f
+                bt.typeface = Typeface.DEFAULT_BOLD
+                bt.gravity = Gravity.CENTER
+                t.addView(bt, LinearLayout.LayoutParams(WC, WC).apply { topMargin = dp(2) })
+            }
+            val tv = TextView(this)
+            tv.text = label
+            tv.setTextColor(if (locked) 0xFF8A9690.toInt() else Color.WHITE)
+            tv.textSize = 12f
+            tv.gravity = Gravity.CENTER
+            tv.maxLines = 2
+            t.addView(tv, LinearLayout.LayoutParams(WC, WC).apply { topMargin = dp(8) })
+            if (locked) {
+                val d = getDrawable(R.drawable.ic_lock)?.mutate()
+                d?.setTint(Color.WHITE)
+                t.lockIcon = d
+            }
+            t.layoutParams = LinearLayout.LayoutParams(0, dp(108), 1f).apply { setMargins(dp(5), dp(5), dp(5), dp(5)) }
+            t.isFocusable = false
+            t.setOnClickListener { onTap() }
+            return t
         }
-        col.addView(menuItem("Ukuran logo: ${bubbleSizeDp}dp  (− / +)") { closePanel(); openPanelSizeControls() })
-        col.addView(menuItem("Transparansi: ${(bubbleOpacity * 100).toInt()}%  (ubah)") { bubbleOpacity = if (bubbleOpacity >= 0.99f) 0.75f else if (bubbleOpacity >= 0.7f) 0.5f else 1f; Store.prefs(this).edit().putFloat("bubble_opacity", bubbleOpacity).apply(); bubble?.alpha = bubbleOpacity * if (enabledMap) 1f else 0.55f; closePanel() })
-        col.addView(menuItem("Kecepatan kursor: x$cursorSpeed  (ubah)") {
-            cursorSpeed = if (cursorSpeed < 1.4f) 1.5f else if (cursorSpeed < 1.9f) 2f else if (cursorSpeed < 2.9f) 3f else 1f
-            Store.prefs(this).edit().putFloat("cursor_speed", cursorSpeed).apply()
-            Toast.makeText(this, "Kecepatan kursor x$cursorSpeed", Toast.LENGTH_SHORT).show()
-            closePanel()
-        })
-        col.addView(menuItem("Edit tombol") { closePanel(); openEditor() })
-        col.addView(menuItem("Sembunyikan") { shutdown() })
-        try { wm?.addView(col, lp); panel = col } catch (e: Exception) {}
+
+        fun row2(a: View, b: View): LinearLayout {
+            val r = LinearLayout(this)
+            r.orientation = LinearLayout.HORIZONTAL
+            r.addView(a)
+            r.addView(b)
+            return r
+        }
+
+        val game = Store.currentGame(this)
+        val profBadge = if (game.isEmpty()) null else Store.activeProfile(this, game).take(10).uppercase()
+        val onColor = MINT
+        val offColor = 0xFFF87171.toInt()
+
+        val grid = LinearLayout(this)
+        grid.orientation = LinearLayout.VERTICAL
+
+        grid.addView(row2(
+            tile(R.drawable.ic_keyboard, "Edit Keymap") { closePanel(); openEditor() },
+            tile(R.drawable.ic_list, "Profil Keymap", profBadge) {
+                if (game.isEmpty()) {
+                    Toast.makeText(this, "Mulai game dari aplikasi dulu", Toast.LENGTH_SHORT).show()
+                } else {
+                    val names = Store.profiles(this, game)
+                    if (names.size < 2) {
+                        Toast.makeText(this, "Baru ada 1 profil. Tambah di tab Pemetaan.", Toast.LENGTH_SHORT).show()
+                    } else {
+                        val next = names[(names.indexOf(Store.activeProfile(this, game)) + 1) % names.size]
+                        Store.setActiveProfile(this, game, next)
+                        Toast.makeText(this, "Profil: $next", Toast.LENGTH_SHORT).show()
+                        rebuild()
+                    }
+                }
+            }))
+        grid.addView(row2(
+            tile(R.drawable.ic_mouse, "Pengaturan Mouse", "x$cursorSpeed") {
+                cursorSpeed = if (cursorSpeed < 1.4f) 1.5f else if (cursorSpeed < 1.9f) 2f else if (cursorSpeed < 2.9f) 3f else 1f
+                Store.prefs(this).edit().putFloat("cursor_speed", cursorSpeed).apply()
+                Toast.makeText(this, "Kecepatan kursor x$cursorSpeed", Toast.LENGTH_SHORT).show()
+                rebuild()
+            },
+            tile(R.drawable.ic_settings, "Macro", null, MINT, true) {
+                Toast.makeText(this, "Macro belum tersedia", Toast.LENGTH_SHORT).show()
+            }))
+        grid.addView(row2(
+            tile(R.drawable.ic_game, "Mapping", if (enabledMap) "ON" else "OFF", if (enabledMap) onColor else offColor) {
+                setMapping(!enabledMap); rebuild()
+            },
+            tile(R.drawable.ic_visibility, "Tombol di Layar", if (hudVisible) "ON" else "OFF", if (hudVisible) onColor else offColor) {
+                hudVisible = !hudVisible; applyHudVisibility(); rebuild()
+            }))
+        grid.addView(row2(
+            tile(R.drawable.ic_resize, "Ukuran Logo", "${bubbleSizeDp}dp") { closePanel(); openPanelSizeControls() },
+            tile(R.drawable.ic_ring, "Transparansi", "${(bubbleOpacity * 100).toInt()}%") {
+                bubbleOpacity = if (bubbleOpacity >= 0.99f) 0.75f else if (bubbleOpacity >= 0.7f) 0.5f else 1f
+                Store.prefs(this).edit().putFloat("bubble_opacity", bubbleOpacity).apply()
+                bubble?.alpha = bubbleOpacity * if (enabledMap) 1f else 0.55f
+                rebuild()
+            }))
+        grid.addView(row2(
+            tile(R.drawable.ic_exit, "Kembali ke Aplikasi") {
+                closePanel()
+                try {
+                    startActivity(Intent(this, MainActivity::class.java)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP))
+                } catch (_: Exception) {}
+            },
+            tile(R.drawable.ic_power, "Sembunyikan") { shutdown() }))
+
+        val scroll = android.widget.ScrollView(this)
+        scroll.isVerticalScrollBarEnabled = false
+        scroll.addView(grid)
+        body.addView(scroll, LinearLayout.LayoutParams(MP, 0, 1f))
+        root.addView(body, FrameLayout.LayoutParams(MP, MP))
+
+        // gagang putih di tepi kanan: tap untuk menutup
+        val r = dp(4).toFloat()
+        val handle = View(this)
+        val hb = GradientDrawable()
+        hb.setColor(Color.WHITE)
+        hb.cornerRadii = floatArrayOf(r, r, 0f, 0f, 0f, 0f, r, r)
+        handle.background = hb
+        handle.setOnClickListener { closePanel() }
+        root.addView(handle, FrameLayout.LayoutParams(dp(12), dp(76), Gravity.END or Gravity.TOP).apply { topMargin = dp(66) })
+
+        val lp = WindowManager.LayoutParams(pw, MP, overlayType(),
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT)
+        lp.gravity = Gravity.TOP or Gravity.START
+        lp.x = 0
+        lp.y = 0
+        if (Build.VERSION.SDK_INT >= 28) {
+            lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        }
+        try {
+            wm?.addView(root, lp)
+            panel = root
+            root.translationX = -pw.toFloat()
+            root.animate().translationX(0f).setDuration(150).start()
+            // kursor harus tampil di atas menu supaya bisa dipakai menekan tile
+            hideCursor()
+            showCursor()
+        } catch (e: Exception) {}
     }
 
     private fun closePanel() {
+        panelClosedAt = System.currentTimeMillis()
         panel?.let { try { wm?.removeView(it) } catch (e: Exception) {} }
         panel = null
     }
