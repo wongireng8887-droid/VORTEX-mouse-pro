@@ -620,7 +620,7 @@ class OverlayService : Service() {
                         }
                     }
                     MotionEvent.ACTION_UP -> if (!moved) {
-                        if (panel == null) openPanel() else closePanel()
+                        if (editor == null) openEditor() else closeEditor()
                     }
                 }
                 return true
@@ -798,25 +798,68 @@ class OverlayService : Service() {
 
             val top = LinearLayout(c).apply {
                 orientation = LinearLayout.VERTICAL
-                setPadding(dp(12), dp(8), dp(12), dp(8))
-                background = rounded(0xF2111A17.toInt(), 14)
+                setPadding(dp(10), dp(8), dp(10), dp(10))
+                background = rounded(0xF2111A17.toInt(), 16)
+                elevation = dp(12).toFloat()
             }
-            status.setTextColor(Color.WHITE)
-            status.textSize = 12f
+            val toolbar = LinearLayout(c).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+            }
+            toolbar.addView(iconChip(R.drawable.ic_add) {
+                addMenu.visibility = if (addMenu.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+            })
+            toolbar.addView(iconChip(R.drawable.ic_minus) { closeEditor() })
+            toolbar.addView(iconChip(R.drawable.ic_check) { closeEditor() })
+            top.addView(toolbar)
+
+            status.setTextColor(0xFFB8C9C2.toInt())
+            status.textSize = 10f
             status.text = hint
+            status.gravity = Gravity.CENTER
+            status.setPadding(0, dp(4), 0, dp(4))
             top.addView(status)
-            val row = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-            row.addView(chipIc("Tambah", R.drawable.ic_add) { addMenu.visibility = if (addMenu.visibility == View.VISIBLE) View.GONE else View.VISIBLE })
-            row.addView(chip("Template") { applyTemplate() })
-            row.addView(chipIc("Selesai", R.drawable.ic_check) { closeEditor() })
-            top.addView(row)
-            addMenu.orientation = LinearLayout.HORIZONTAL
-            addMenu.visibility = View.GONE
-            addMenu.addView(chip("Tombol") { addButton() })
-            addMenu.addView(chip("Joystick") { addJoystick() })
-            addMenu.addView(chip("FPS Look") { addLook() })
+
+            addMenu.orientation = LinearLayout.VERTICAL
+            addMenu.visibility = View.VISIBLE
+            fun menuTile(label: String, icon: Int, enabled: Boolean = true, action: () -> Unit): TextView {
+                return TextView(c).apply {
+                    text = label
+                    setTextColor(if (enabled) Color.WHITE else 0xFF8A9A93.toInt())
+                    textSize = 11f
+                    typeface = Typeface.DEFAULT_BOLD
+                    gravity = Gravity.CENTER
+                    compoundDrawablePadding = dp(5)
+                    val d = getDrawable(icon)?.mutate()
+                    d?.setTint(if (enabled) Color.WHITE else 0xFF718078.toInt())
+                    d?.setBounds(0, 0, dp(24), dp(24))
+                    setCompoundDrawables(null, d, null, null)
+                    background = rounded(if (enabled) 0xFF07513D.toInt() else 0xFF26352F.toInt(), 10)
+                    alpha = if (enabled) 1f else 0.65f
+                    isEnabled = enabled
+                    layoutParams = LinearLayout.LayoutParams(0, dp(66), 1f).apply {
+                        setMargins(dp(3), dp(3), dp(3), dp(3))
+                    }
+                    setOnClickListener { if (enabled) action() }
+                }
+            }
+            fun menuRow(vararg tiles: TextView) = LinearLayout(c).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                tiles.forEach { addView(it) }
+            }
+            addMenu.addView(menuRow(
+                menuTile("Joystick", R.drawable.ic_game) { addJoystick() },
+                menuTile("FPS Look", R.drawable.ic_mouse) { addLook() },
+                menuTile("Lihat Bebas", R.drawable.ic_ring, false) {}
+            ))
+            addMenu.addView(menuRow(
+                menuTile("Mengetik", R.drawable.ic_keyboard) { addButton() },
+                menuTile("Sentuh", R.drawable.ic_dot) { addButton() },
+                menuTile("Macro", R.drawable.ic_settings, false) {}
+            ))
             top.addView(addMenu)
-            addView(top, FrameLayout.LayoutParams(WC, WC, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = dp(8) })
+            addView(top, FrameLayout.LayoutParams(dp(252), WC, Gravity.CENTER))
 
             panelBox.orientation = LinearLayout.VERTICAL
             panelBox.setPadding(dp(12), dp(8), dp(12), dp(10))
