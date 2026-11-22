@@ -501,7 +501,7 @@ class OverlayService : Service() {
             paint.pathEffect = DashPathEffect(floatArrayOf(dp(8).toFloat(), dp(6).toFloat()), 0f)
             cv.drawCircle(cx, cy, m.radius, paint)
             paint.pathEffect = null
-            drawKey(cv, cx, cy, "Look", sel, lookActive)
+            drawKey(cv, cx, cy, "Look", sel, lookActive, (m.radius / 150f).coerceIn(0.4f, 2f))
         }
 
         private fun drawJoy(cv: Canvas, g: List<Mapping>, loc: IntArray) {
@@ -1040,7 +1040,7 @@ class OverlayService : Service() {
                     downX = rx; downY = ry; lastX = rx; lastY = ry; moved = false; drag = NONE
                     val hit = maps.firstOrNull { m ->
                         val hitRadius = if (m.kind == "TAP") dp(26) * (m.radius / 150f).coerceIn(0.4f, 2f) else dp(32)
-                        (m.kind == "TAP" || m.kind == "LOOK") && hypot(m.x - rx, m.y - ry) < hitRadius
+                        (m.kind == "TAP" || m.kind == "LOOK") && hypot(m.x - rx, m.y - ry).toFloat() < hitRadius
                     }
                     if (hit != null) {
                         drag = hit.keyCode
