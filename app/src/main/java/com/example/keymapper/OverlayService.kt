@@ -661,7 +661,7 @@ class OverlayService : Service() {
         val v = bubble ?: return
         val lp = v.layoutParams as WindowManager.LayoutParams
         lp.width = dp(bubbleSizeDp); lp.height = dp(bubbleSizeDp)
-        (v.getChildAt(0) as? ImageView)?.let { it.layoutParams = FrameLayout.LayoutParams(dp(bubbleSizeDp - 4), dp(bubbleSizeDp - 4), Gravity.CENTER) }
+        ((v as? ViewGroup)?.getChildAt(0) as? ImageView)?.let { it.layoutParams = FrameLayout.LayoutParams(dp(bubbleSizeDp - 4), dp(bubbleSizeDp - 4), Gravity.CENTER) }
         try { wm?.updateViewLayout(v, lp) } catch (_: Exception) {}
     }
 
