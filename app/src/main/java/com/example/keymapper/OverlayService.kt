@@ -67,7 +67,7 @@ class OverlayService : Service() {
     private var lookY = 0f
     private var accX = 0f
     private var accY = 0f
-    // Minta Injector melepas dan membuat ulang sentuhan LOOK saat radius habis.
+    // Minta Injector melakukan recenter otomatis saat jarak virtual finger terlalu jauh.
     private var lookRebasePending = false
     private var prevButtons = 0
 
@@ -114,6 +114,14 @@ class OverlayService : Service() {
         bubbleOpacity = Store.prefs(this).getFloat("bubble_opacity", 1f).coerceIn(0.2f, 1f)
         cursorSpeed = Store.prefs(this).getFloat("cursor_speed", 1.5f).coerceIn(0.5f, 4f)
         Store.prefs(this).registerOnSharedPreferenceChangeListener(listener)
+        // If the injector process disconnects/restarts, its virtual pointers are gone.
+        // Drop the local pointer cache and rebuild DOWN events after it is READY again.
+        Injector.onChange = {
+            handler.post {
+                if (!Injector.ready) live.clear()
+                else if (enabledMap && !editing) refresh()
+            }
+        }
         ShizukuBridge.init()
     }
 
@@ -138,6 +146,7 @@ class OverlayService : Service() {
         stopWatch()
         hideBubble()
         Store.prefs(this).unregisterOnSharedPreferenceChangeListener(listener)
+        Injector.onChange = null
         instance = null
         super.onDestroy()
     }
@@ -313,8 +322,12 @@ class OverlayService : Service() {
         val m = maps.firstOrNull { it.kind == "LOOK" } ?: return
         if (!lookActive) return
         lookX += dx * m.sens
-        lookY += dy * m.sens
-        if (hypot(lookX - m.x, lookY - m.y) >= m.radius) {
+        lookY += dy * m.sensY
+        // Recenter internal virtual finger automatically. This is deliberately
+        // not user-configurable: the FPS Look settings expose only X/Y sensitivity.
+        val (screenW, screenH) = screenSize()
+        val autoRebaseDistance = (minOf(screenW, screenH) * 0.38f).coerceAtLeast(260f)
+        if (hypot(lookX - m.x, lookY - m.y) >= autoRebaseDistance) {
             // Jangan toggle lookActive: itu membuat touch UP/DOWN berulang dari
             // jalur UI dan dapat menyebabkan drag terasa putus atau tersangkut.
             lookX = m.x
@@ -642,16 +655,8 @@ class OverlayService : Service() {
             val cx = m.x - loc[0]
             val cy = m.y - loc[1]
             val sel = m.keyCode == selKey
-            paint.style = Paint.Style.FILL
-            paint.color = 0x33000000
-            cv.drawCircle(cx, cy, m.radius, paint)
-            paint.style = Paint.Style.STROKE
-            paint.strokeWidth = dp(2).toFloat()
-            paint.color = if (sel || lookActive) MINT else 0xAAFFFFFF.toInt()
-            paint.pathEffect = DashPathEffect(floatArrayOf(dp(8).toFloat(), dp(6).toFloat()), 0f)
-            cv.drawCircle(cx, cy, m.radius, paint)
-            paint.pathEffect = null
-            drawKey(cv, cx, cy, if (m.trig != 0) "Look " + shortName(m.trig) else "Look", sel, lookActive, (m.radius / 150f).coerceIn(0.4f, 2f))
+            // FPS Look is represented by a clean marker only; no rotation-area ring.
+            drawKey(cv, cx, cy, if (m.trig != 0) "Look " + shortName(m.trig) else "Look", sel, lookActive, 1f)
         }
 
         private fun drawJoy(cv: Canvas, g: List<Mapping>, loc: IntArray) {
@@ -1576,12 +1581,12 @@ class OverlayService : Service() {
                 mh.textSize = 12f
                 mh.setPadding(dp(8), dp(8), dp(6), dp(4))
                 settingsBody.addView(mh)
-                settingsBody.addView(stepRow("Sensitivitas", "%.1f".format(m.sens),
-                    { upd { mm -> mm.copy(sens = (mm.sens - 0.2f).coerceIn(0.2f, 5f)) } },
-                    { upd { mm -> mm.copy(sens = (mm.sens + 0.2f).coerceIn(0.2f, 5f)) } }))
-                settingsBody.addView(stepRow("Area putar", m.radius.toInt().toString(),
-                    { upd { mm -> mm.copy(radius = (mm.radius - 20f).coerceIn(60f, 600f)) } },
-                    { upd { mm -> mm.copy(radius = (mm.radius + 20f).coerceIn(60f, 600f)) } }))
+                settingsBody.addView(stepRow("Sensitivitas X", "%.1f".format(m.sens),
+                    { upd { mm -> mm.copy(sens = (mm.sens - 0.1f).coerceIn(0.1f, 10f)) } },
+                    { upd { mm -> mm.copy(sens = (mm.sens + 0.1f).coerceIn(0.1f, 10f)) } }))
+                settingsBody.addView(stepRow("Sensitivitas Y", "%.1f".format(m.sensY),
+                    { upd { mm -> mm.copy(sensY = (mm.sensY - 0.1f).coerceIn(0.1f, 10f)) } },
+                    { upd { mm -> mm.copy(sensY = (mm.sensY + 0.1f).coerceIn(0.1f, 10f)) } }))
             } else {
                 settingsBody.addView(stepRow("Radius joystick", m.radius.toInt().toString(),
                     { upd { mm -> mm.copy(radius = (mm.radius - 20f).coerceIn(60f, 420f)) } },
