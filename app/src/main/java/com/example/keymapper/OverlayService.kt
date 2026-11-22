@@ -67,6 +67,23 @@ class OverlayService : Service() {
     private var lookY = 0f
     // Minta Injector melakukan recenter otomatis saat jarak virtual finger terlalu jauh.
     private var lookRebasePending = false
+    // Saat recenter, jari look diangkat sebentar (lookGap) lalu dipasang lagi dengan id jari BARU,
+    // supaya game tidak melihat lompatan posisi dari id yang sama.
+    private var lookGap = false
+    private var lookSw = 0
+    private var lookSh = 0
+    private var lastLookSlot = -1
+    private val lookRegrab = Runnable {
+        lookGap = false
+        if (lookActive) {
+            refresh()   // DOWN baru di titik marker
+            val dx = pendingLookDx
+            val dy = pendingLookDy
+            pendingLookDx = 0f
+            pendingLookDy = 0f
+            if (dx != 0f || dy != 0f) applyLook(dx, dy)
+        }
+    }
     private var prevButtons = 0
     // Coalesce mouse-look deltas so high-rate input + simultaneous key presses
     // don't flood the injection pipe and cause stutter ("patah-patah").
@@ -289,12 +306,6 @@ class OverlayService : Service() {
             pressed.remove(code)
             for (m in ms) if (m.kind == "TAP" && m.mode == "RELEASE") pulse(code, 1)
         }
-        // Saat tembak/tombol lain ditekan sambil look, flush gerak kamera dulu
-        // supaya MOVE look tidak tertinggal di belakang event DOWN tombol.
-        if (lookActive && lookFlushPending) {
-            handler.removeCallbacks(lookFlush)
-            lookFlush.run()
-        }
         refresh()
         return true
     }
@@ -329,39 +340,59 @@ class OverlayService : Service() {
         r.run()
     }
 
+    // Event capture dari mouse sudah dikumpulkan per frame oleh sistem, jadi langsung diteruskan
+    // (tanpa jeda tambahan) supaya kamera tidak terlambat/patah.
     private fun onMouseMove(dx: Float, dy: Float) {
         if (!enabledMap || editing || !lookActive) return
         if (dx == 0f && dy == 0f) return
         lastEvt = "Mouse gerak"
-        // Accumulate deltas and flush on a short interval. Injecting every raw
-        // mouse event while other keys are held floods the Shizuku/ADB pipe and
-        // produces the choppy "patah-patah" feel. 4ms ≈ 250 Hz keeps look tight
-        // even while holding fire (mouse left) or movement keys.
-        pendingLookDx += dx
-        pendingLookDy += dy
-        if (!lookFlushPending) {
-            lookFlushPending = true
-            handler.postDelayed(lookFlush, 4)
+        if (lookGap) {              // jari look sedang diangkat sebentar: tampung dulu
+            pendingLookDx += dx
+            pendingLookDy += dy
+            return
         }
+        applyLook(dx, dy)
     }
 
     private fun applyLook(dx: Float, dy: Float) {
         val m = maps.firstOrNull { it.kind == "LOOK" } ?: return
-        if (!lookActive) return
+        if (!lookActive || lookGap) return
         lookX += dx * m.sens
         lookY += dy * m.sensY
-        // Recenter internal virtual finger automatically. This is deliberately
-        // not user-configurable: the FPS Look settings expose only X/Y sensitivity.
-        val (screenW, screenH) = screenSize()
-        val autoRebaseDistance = (minOf(screenW, screenH) * 0.45f).coerceAtLeast(300f)
-        if (hypot(lookX - m.x, lookY - m.y) >= autoRebaseDistance) {
-            // Jangan toggle lookActive: itu membuat touch UP/DOWN berulang dari
-            // jalur UI dan dapat menyebabkan drag terasa putus atau tersangkut.
-            lookX = m.x
-            lookY = m.y
-            lookRebasePending = true
+        if (lookSw == 0 || lookSh == 0) {
+            val (a, b) = screenSize()
+            lookSw = a; lookSh = b
         }
-        refresh()
+        // Jari virtual tidak boleh keluar layar / terlalu jauh dari marker.
+        val reach = (minOf(lookSw, lookSh) * 0.45f).coerceAtLeast(300f)
+        val margin = dp(24).toFloat()
+        val minX = maxOf(margin, m.x - reach)
+        val maxX = minOf(lookSw - margin, m.x + reach)
+        val minY = maxOf(margin, m.y - reach)
+        val maxY = minOf(lookSh - margin, m.y + reach)
+        if (lookX < minX || lookX > maxX || lookY < minY || lookY > maxY) {
+            recenterLook(m)
+            return
+        }
+        moveLook()
+    }
+
+    // Hanya menggeser jari look (tanpa menghitung ulang semua sentuhan / menggambar ulang HUD).
+    private fun moveLook() {
+        val cur = live["look"]
+        if (cur == null) { refresh(); return }
+        if (cur.second.x == lookX && cur.second.y == lookY) return
+        if (Injector.touch(1, cur.first, lookX, lookY)) live["look"] = cur.first to PointF(lookX, lookY)
+    }
+
+    private fun recenterLook(m: Mapping) {
+        lastEvt = "Look recenter"
+        lookX = m.x; lookY = m.y
+        val cur = live.remove("look")
+        if (cur != null) Injector.touch(2, cur.first, cur.second.x, cur.second.y)   // angkat jari
+        lookGap = true
+        handler.removeCallbacks(lookRegrab)
+        handler.postDelayed(lookRegrab, 24)                                         // pasang lagi 24ms kemudian
     }
 
     private fun onMouseButtons(state: Int) {
@@ -417,11 +448,17 @@ class OverlayService : Service() {
         if (on == lookActive) return
         // Flush / discard any pending look motion when toggling.
         handler.removeCallbacks(lookFlush)
+        handler.removeCallbacks(lookRegrab)
         lookFlushPending = false
         pendingLookDx = 0f
         pendingLookDy = 0f
         lookRebasePending = false
-        if (on) { lookActive = true; lookX = m.x; lookY = m.y } else lookActive = false
+        lookGap = false
+        if (on) {
+            val (a, b) = screenSize()
+            lookSw = a; lookSh = b
+            lookActive = true; lookX = m.x; lookY = m.y
+        } else lookActive = false
         updateCursorVisibility()
         refresh()
     }
@@ -433,6 +470,7 @@ class OverlayService : Service() {
             handler.removeCallbacksAndMessages(null)
             lookActive = false
             lookRebasePending = false
+            lookGap = false
             lookFlushPending = false
             pendingLookDx = 0f
             pendingLookDy = 0f
@@ -458,7 +496,7 @@ class OverlayService : Service() {
                     if (on) t["k${m.keyCode}"] = PointF(m.x, m.y) to PointF(m.x, m.y)
                 }
                 "LOOK" -> {
-                    if (lookActive) t["look"] = PointF(m.x, m.y) to PointF(lookX, lookY)
+                    if (lookActive && !lookGap) t["look"] = PointF(m.x, m.y) to PointF(lookX, lookY)
                 }
                 else -> {
                     if (m.keyCode in pressed) {
@@ -487,13 +525,6 @@ class OverlayService : Service() {
     }
 
     private fun applyShizuku() {
-        // Saat batas radius tercapai, lakukan UP lalu DOWN baru pada titik tengah.
-        // Ini me-reset virtual finger secara eksplisit tanpa mematikan mode LOOK.
-        if (lookRebasePending) {
-            val cur = live.remove("look")
-            if (cur != null) Injector.touch(2, cur.first, cur.second.x, cur.second.y)
-            lookRebasePending = false
-        }
         val gone = live.keys.filter { it !in desired }
         for (id in gone) {
             val cur = live[id] ?: continue
@@ -505,7 +536,9 @@ class OverlayService : Service() {
             val target = st.second
             val cur = live[id]
             if (cur == null) {
-                val slot = (0..8).first { sl -> live.values.none { it.first == sl } }
+                val free = (0..8).filter { sl -> live.values.none { it.first == sl } }
+                val slot = if (id == "look" && free.size > 1) (free.firstOrNull { it != lastLookSlot } ?: free.first()) else free.first()
+                if (id == "look") lastLookSlot = slot
                 if (Injector.touch(0, slot, start.x, start.y)) {
                     if (target.x != start.x || target.y != start.y) Injector.touch(1, slot, target.x, target.y)
                     live[id] = slot to PointF(target.x, target.y)
@@ -585,19 +618,30 @@ class OverlayService : Service() {
             isFocusableInTouchMode = true
             setOnCapturedPointerListener { _, e ->
                 onMouseButtons(e.buttonState)
-                // Pointer-capture reports relative deltas via getX/getY. Some devices
-                // also expose AXIS_RELATIVE_X/Y — use those when non-zero so look
-                // keeps moving while a mouse button (e.g. fire) is held.
-                val relX = e.getAxisValue(MotionEvent.AXIS_RELATIVE_X)
-                val relY = e.getAxisValue(MotionEvent.AXIS_RELATIVE_Y)
-                val dx = if (relX != 0f || relY != 0f) relX else e.x
-                val dy = if (relX != 0f || relY != 0f) relY else e.y
-                val moveLike = e.actionMasked == MotionEvent.ACTION_MOVE ||
-                    e.actionMasked == MotionEvent.ACTION_HOVER_MOVE ||
-                    e.actionMasked == MotionEvent.ACTION_BUTTON_PRESS ||
-                    e.actionMasked == MotionEvent.ACTION_BUTTON_RELEASE
-                if (moveLike && (dx != 0f || dy != 0f)) {
-                    if (lookActive) onMouseMove(dx, dy) else moveCursorBy(dx, dy)
+                // Pointer-capture memberi pergeseran relatif lewat getX/getY. Sistem MENGELOMPOKKAN banyak
+                // sampel mouse dalam satu event (history) per frame. Hanya membaca sampel terakhir membuat
+                // gerakan hilang (terasa lag / kadang tidak mau drag, apalagi saat game berat sambil menembak).
+                // Maka semua sampel dijumlahkan. Event tombol (PRESS/RELEASE) tidak dihitung agar tidak ganda.
+                val act = e.actionMasked
+                if (act == MotionEvent.ACTION_MOVE || act == MotionEvent.ACTION_HOVER_MOVE) {
+                    var dx = e.x
+                    var dy = e.y
+                    for (i in 0 until e.historySize) {
+                        dx += e.getHistoricalX(i)
+                        dy += e.getHistoricalY(i)
+                    }
+                    if (dx == 0f && dy == 0f) {
+                        // sebagian perangkat hanya mengisi sumbu relatif
+                        dx = e.getAxisValue(MotionEvent.AXIS_RELATIVE_X)
+                        dy = e.getAxisValue(MotionEvent.AXIS_RELATIVE_Y)
+                        for (i in 0 until e.historySize) {
+                            dx += e.getHistoricalAxisValue(MotionEvent.AXIS_RELATIVE_X, i)
+                            dy += e.getHistoricalAxisValue(MotionEvent.AXIS_RELATIVE_Y, i)
+                        }
+                    }
+                    if (dx != 0f || dy != 0f) {
+                        if (lookActive) onMouseMove(dx, dy) else moveCursorBy(dx, dy)
+                    }
                 }
                 true
             }
@@ -626,6 +670,8 @@ class OverlayService : Service() {
                 pendingLookDy = 0f
                 lookActive = false
                 lookRebasePending = false
+                lookGap = false
+                handler.removeCallbacks(lookRegrab)
                 prevButtons = 0
                 cursorDown = false
                 leftByCursor = false
@@ -657,6 +703,8 @@ class OverlayService : Service() {
                 pendingLookDy = 0f
                 lookActive = false
                 lookRebasePending = false
+                lookGap = false
+                handler.removeCallbacks(lookRegrab)
                 refresh()
             }
             if (cursorDown) { cursorDown = false; leftByCursor = false; refresh() }
