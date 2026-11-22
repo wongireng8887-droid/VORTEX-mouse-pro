@@ -67,14 +67,8 @@ class OverlayService : Service() {
     private var lookY = 0f
     private var accX = 0f
     private var accY = 0f
-    private var flushPending = false
-    private val lookIdle = Runnable { lookActive = false; refresh() }
-    private val flush = Runnable {
-        flushPending = false
-        val dx = accX; val dy = accY
-        accX = 0f; accY = 0f
-        applyLook(dx, dy)
-    }
+    // Minta Injector melepas dan membuat ulang sentuhan LOOK saat radius habis.
+    private var lookRebasePending = false
     private var prevButtons = 0
 
     // sentuhan lewat Shizuku
@@ -310,8 +304,9 @@ class OverlayService : Service() {
     private fun onMouseMove(dx: Float, dy: Float) {
         if (!enabledMap || editing || !lookActive) return
         lastEvt = "Mouse gerak"
-        accX += dx; accY += dy
-        if (!flushPending) { flushPending = true; handler.postDelayed(flush, 6) }
+        // Pointer-capture sudah mengirim delta relatif. Proses langsung agar tidak
+        // menambah antrean timer di main thread yang terasa seperti input tertinggal.
+        if (dx != 0f || dy != 0f) applyLook(dx, dy)
     }
 
     private fun applyLook(dx: Float, dy: Float) {
@@ -319,9 +314,12 @@ class OverlayService : Service() {
         if (!lookActive) return
         lookX += dx * m.sens
         lookY += dy * m.sens
-        if (hypot(lookX - m.x, lookY - m.y) > m.radius) {
-            lookActive = false; refresh()
-            lookActive = true; lookX = m.x; lookY = m.y
+        if (hypot(lookX - m.x, lookY - m.y) >= m.radius) {
+            // Jangan toggle lookActive: itu membuat touch UP/DOWN berulang dari
+            // jalur UI dan dapat menyebabkan drag terasa putus atau tersangkut.
+            lookX = m.x
+            lookY = m.y
+            lookRebasePending = true
         }
         refresh()
     }
@@ -377,9 +375,8 @@ class OverlayService : Service() {
 
     private fun setLook(on: Boolean, m: Mapping) {
         if (on == lookActive) return
-        accX = 0f; accY = 0f; flushPending = false
-        handler.removeCallbacks(flush)
-        handler.removeCallbacks(lookIdle)
+        accX = 0f; accY = 0f
+        lookRebasePending = false
         if (on) { lookActive = true; lookX = m.x; lookY = m.y } else lookActive = false
         updateCursorVisibility()
         refresh()
@@ -390,7 +387,7 @@ class OverlayService : Service() {
         if (!on) {
             pressed.clear(); pulsing.clear(); repeaters.clear()
             handler.removeCallbacksAndMessages(null)
-            lookActive = false; accX = 0f; accY = 0f; flushPending = false
+            lookActive = false; accX = 0f; accY = 0f; lookRebasePending = false
             cursorDown = false; leftByCursor = false; cursorFlushPending = false
             refresh()
         }
@@ -442,6 +439,13 @@ class OverlayService : Service() {
     }
 
     private fun applyShizuku() {
+        // Saat batas radius tercapai, lakukan UP lalu DOWN baru pada titik tengah.
+        // Ini me-reset virtual finger secara eksplisit tanpa mematikan mode LOOK.
+        if (lookRebasePending) {
+            val cur = live.remove("look")
+            if (cur != null) Injector.touch(2, cur.first, cur.second.x, cur.second.y)
+            lookRebasePending = false
+        }
         val gone = live.keys.filter { it !in desired }
         for (id in gone) {
             val cur = live[id] ?: continue
@@ -551,7 +555,16 @@ class OverlayService : Service() {
 
         override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
             super.onWindowFocusChanged(hasWindowFocus)
-            if (hasWindowFocus) { requestPointerCapture(); showCursor() } else hideCursor()
+            if (hasWindowFocus) {
+                requestPointerCapture(); showCursor()
+            } else {
+                hideCursor()
+                if (lookActive) {
+                    lookActive = false
+                    lookRebasePending = false
+                    refresh() // releases the injected LOOK pointer
+                }
+            }
         }
     }
 
@@ -567,8 +580,7 @@ class OverlayService : Service() {
         } else if (!need && capture != null) {
             capture?.let { try { wm?.removeView(it) } catch (e: Exception) {} }
             capture = null
-            handler.removeCallbacks(lookIdle)
-            if (lookActive) { lookActive = false; refresh() }
+            if (lookActive) { lookActive = false; lookRebasePending = false; refresh() }
             if (cursorDown) { cursorDown = false; leftByCursor = false; refresh() }
             hideCursor()
             prevButtons = 0
