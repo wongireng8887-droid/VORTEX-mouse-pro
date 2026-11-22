@@ -204,12 +204,11 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(20), dp(10), dp(20), dp(6))
         }
-        val logo = TextView(this).apply {
-            text = "V"; textSize = 20f; setTextColor(MINT); typeface = Typeface.DEFAULT_BOLD
-            gravity = Gravity.CENTER
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL; setColor(0xFF12201B.toInt()); setStroke(dp(3), MINT)
-            }
+        val logo = ImageView(this).apply {
+            setImageResource(R.drawable.vortex_mouse_logo)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setBackgroundColor(Color.TRANSPARENT)
+            contentDescription = "Vortex Mouse Pro"
         }
         bar.addView(logo, LinearLayout.LayoutParams(dp(40), dp(40)))
         val titles = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(10), 0, 0, 0) }

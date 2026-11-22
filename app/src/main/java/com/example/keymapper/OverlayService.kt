@@ -464,25 +464,27 @@ class OverlayService : Service() {
             for (m in maps) {
                 val hot = m.keyCode in pressed || m.keyCode in pulsing
                 when (m.kind) {
-                    "TAP" -> drawKey(cv, m.x - loc[0], m.y - loc[1], shortName(m.keyCode), m.keyCode == selKey, hot)
+                    "TAP" -> drawKey(cv, m.x - loc[0], m.y - loc[1], shortName(m.keyCode), m.keyCode == selKey, hot,
+                        (m.radius / 150f).coerceIn(0.4f, 2f))
                     "LOOK" -> drawLook(cv, m, loc)
                 }
             }
             selPos?.let { drawCross(cv, it, loc) }
         }
 
-        private fun drawKey(cv: Canvas, x: Float, y: Float, name: String, sel: Boolean, hot: Boolean) {
+        private fun drawKey(cv: Canvas, x: Float, y: Float, name: String, sel: Boolean, hot: Boolean, scale: Float) {
+            val radius = dp(26).toFloat() * scale
             paint.style = Paint.Style.FILL
             paint.color = if (hot) 0xE60F8F63.toInt() else 0xB3000000.toInt()
-            cv.drawCircle(x, y, dp(26).toFloat(), paint)
+            cv.drawCircle(x, y, radius, paint)
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = if (sel) dp(3).toFloat() else dp(1).toFloat()
             paint.color = if (sel || hot) MINT else 0xAAFFFFFF.toInt()
-            cv.drawCircle(x, y, dp(26).toFloat(), paint)
+            cv.drawCircle(x, y, radius, paint)
             paint.style = Paint.Style.FILL
             paint.color = Color.WHITE
             paint.typeface = Typeface.DEFAULT_BOLD
-            paint.textSize = (if (name.length > 3) dp(10) else dp(15)).toFloat()
+            paint.textSize = (if (name.length > 3) dp(10) else dp(15)).toFloat() * scale.coerceIn(0.75f, 1.5f)
             cv.drawText(name, x, y + paint.textSize * 0.35f, paint)
         }
 
@@ -821,7 +823,7 @@ class OverlayService : Service() {
             top.addView(status)
 
             addMenu.orientation = LinearLayout.VERTICAL
-            addMenu.visibility = View.VISIBLE
+            addMenu.visibility = View.GONE
             fun menuTile(label: String, icon: Int, enabled: Boolean = true, action: () -> Unit): TextView {
                 return TextView(c).apply {
                     text = label
@@ -925,11 +927,14 @@ class OverlayService : Service() {
 
             val r2 = row()
             if (m.kind == "TAP") {
-                modes.forEachIndexed { i, md ->
-                    val cc = chip(modeLabels[i]) { upd { it.copy(mode = md) } }
-                    if (m.mode == md) cc.background = rounded(0xFF0F6B4B.toInt(), 10)
-                    r2.addView(cc)
-                }
+                r2.addView(lbl("Ukuran"))
+                r2.addView(iconChip(R.drawable.ic_minus) {
+                    upd { it.copy(radius = (it.radius - 15f).coerceIn(60f, 300f)) }
+                })
+                r2.addView(lbl("${(m.radius / 150f * 100).toInt()}%"))
+                r2.addView(iconChip(R.drawable.ic_add) {
+                    upd { it.copy(radius = (it.radius + 15f).coerceIn(60f, 300f)) }
+                })
             } else if (m.kind == "LOOK") {
                 r2.addView(lbl("Sens"))
                 r2.addView(iconChip(R.drawable.ic_minus) { upd { it.copy(sens = (it.sens - 0.2f).coerceIn(0.2f, 5f)) } })
@@ -1033,7 +1038,10 @@ class OverlayService : Service() {
             when (e.action) {
                 MotionEvent.ACTION_DOWN -> {
                     downX = rx; downY = ry; lastX = rx; lastY = ry; moved = false; drag = NONE
-                    val hit = maps.firstOrNull { (it.kind == "TAP" || it.kind == "LOOK") && hypot(it.x - rx, it.y - ry) < dp(32) }
+                    val hit = maps.firstOrNull { m ->
+                        val hitRadius = if (m.kind == "TAP") dp(26) * (m.radius / 150f).coerceIn(0.4f, 2f) else dp(32)
+                        (m.kind == "TAP" || m.kind == "LOOK") && hypot(m.x - rx, m.y - ry) < hitRadius
+                    }
                     if (hit != null) {
                         drag = hit.keyCode
                     } else {
