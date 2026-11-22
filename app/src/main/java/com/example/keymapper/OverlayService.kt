@@ -670,9 +670,10 @@ class OverlayService : Service() {
     private fun showCursor() {
         if (cursorView != null || bubble == null) return
         val v = ImageView(this).apply {
-            setImageResource(R.drawable.vortex_mouse_logo)
+            // Custom pointer: red arrow asset, separate from the floating Vortex logo.
+            setImageResource(R.drawable.vortex_cursor)
             scaleType = ImageView.ScaleType.FIT_CENTER
-            alpha = 0.95f
+            alpha = 0.98f
         }
         val lp = WindowManager.LayoutParams(dp(28), dp(28), overlayType(),
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
@@ -789,7 +790,7 @@ class OverlayService : Service() {
         private var lastY = 0f
         private val modes = listOf("HOLD", "TAP", "REPEAT", "DOUBLE", "RELEASE")
         private val modeLabels = listOf("Hold", "Tap", "Repeat", "Double", "Release")
-        private val hint = "Tambah tombol, lalu geser ke posisinya. Tap tanda untuk atur."
+        private val hint = "Pilih tombol, lalu tahan lingkaran dan geser ke posisi game. Gunakan panah Geser untuk penyesuaian."
 
         init {
             setBackgroundColor(0x66000000)
@@ -998,10 +999,15 @@ class OverlayService : Service() {
         private fun addButton() {
             addMenu.visibility = View.GONE
             if (maps.any { it.keyCode == 0 }) { select(0); return }
-            val c = center()
-            persist(maps + Mapping(0, "TAP", c.x, c.y))
+            // Start in the clear right-hand area: the old screen center was covered
+            // by the editor toolbar, so users could not grab the newly-created control.
+            val loc = IntArray(2)
+            canvasView.getLocationOnScreen(loc)
+            val x = loc[0] + canvasView.width * 0.78f
+            val y = loc[1] + canvasView.height * 0.55f
+            persist(maps + Mapping(0, "TAP", x, y))
             select(0)
-            status.text = "Tekan tombol keyboard (atau Mouse Kiri/Kanan), lalu geser ke posisinya."
+            status.text = "Tekan tombol keyboard / Mouse Kiri-Kanan. Lalu tahan lingkaran dan geser ke posisi game; gunakan panah Geser bila perlu."
         }
 
         private fun addJoystick() {
