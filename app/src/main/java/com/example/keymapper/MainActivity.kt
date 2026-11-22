@@ -3,6 +3,7 @@ package com.example.keymapper
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
+import android.content.res.ColorStateList
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ResolveInfo
@@ -21,6 +22,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.ArrayAdapter
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
@@ -29,6 +31,8 @@ import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
+import android.text.Editable
+import android.text.TextWatcher
 
 class MainActivity : Activity() {
     private val BG = 0xFF0F1715.toInt()
@@ -48,6 +52,7 @@ class MainActivity : Activity() {
     private lateinit var chipKb: TextView
     private lateinit var chipSvc: TextView
     private var tab = 0
+    private var showingAddGame = false
 
     private val inputListener = object : InputManager.InputDeviceListener {
         override fun onInputDeviceAdded(id: Int) { updateStatus() }
@@ -97,6 +102,14 @@ class MainActivity : Activity() {
             checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 7)
         }
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onBackPressed() {
+        if (showingAddGame) {
+            showingAddGame = false
+            select(0)
+        } else super.onBackPressed()
     }
 
     override fun onResume() {
@@ -297,33 +310,124 @@ class MainActivity : Activity() {
     }
 
     private fun addGame() {
+        showingAddGame = true
         val pm = packageManager
         val q = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        val have = Store.games(this)
         val apps = pm.queryIntentActivities(q, 0)
-            .filter { it.activityInfo.packageName != packageName && it.activityInfo.packageName !in have }
+            .filter { it.activityInfo.packageName != packageName }
+            .distinctBy { it.activityInfo.packageName }
             .sortedBy { it.loadLabel(pm).toString().lowercase() }
-        if (apps.isEmpty()) { toast("Tidak ada aplikasi yang bisa ditambahkan"); return }
-        val adapter = object : ArrayAdapter<ResolveInfo>(this, 0, apps) {
-            override fun getView(pos: Int, cv: View?, parent: ViewGroup): View {
-                val r = LinearLayout(context).apply {
-                    orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-                    setPadding(dp(16), dp(8), dp(16), dp(8))
+
+        val page = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(0xFF101615.toInt())
+        }
+
+        // Header: back arrow + title, matching the supplied reference screen.
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(22), 0, dp(20), 0)
+            setBackgroundColor(0xFF1D2524.toInt())
+        }
+        val back = TextView(this).apply {
+            text = "‹"
+            textSize = 42f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            setPadding(0, 0, dp(16), dp(5))
+            setOnClickListener { showingAddGame = false; select(0) }
+        }
+        header.addView(back, LinearLayout.LayoutParams(dp(42), dp(64)))
+        header.addView(label("Tambah Game", 21f, Color.WHITE, true))
+        page.addView(header, LinearLayout.LayoutParams(M, dp(64)))
+        page.addView(View(this).apply { setBackgroundColor(0xFF202927.toInt()) }, LinearLayout.LayoutParams(M, dp(1)))
+
+        // Search bar.
+        val searchRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(24), 0, dp(24), 0)
+            setBackgroundColor(0xFF101615.toInt())
+        }
+        searchRow.addView(label("⌕", 30f, Color.WHITE, false), LinearLayout.LayoutParams(dp(42), W))
+        val search = EditText(this).apply {
+            hint = "Tambahkan game dan nikmati bermain dengan keyboard dan mouse"
+            setHintTextColor(0xFF77817E.toInt())
+            setTextColor(Color.WHITE)
+            textSize = 16f
+            singleLine = true
+            background = null
+            setPadding(dp(8), dp(16), 0, dp(16))
+        }
+        searchRow.addView(search, LinearLayout.LayoutParams(0, W, 1f))
+        page.addView(searchRow, LinearLayout.LayoutParams(M, dp(76)))
+        page.addView(View(this).apply { setBackgroundColor(0xFF202927.toInt()) }, LinearLayout.LayoutParams(M, dp(1)))
+
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val scroll = ScrollView(this).apply {
+            isFillViewport = true
+            addView(list)
+        }
+        page.addView(scroll, LinearLayout.LayoutParams(M, 0, 1f))
+
+        fun render(filter: String = "") {
+            list.removeAllViews()
+            val selected = Store.games(this)
+            val visible = apps.filter { it.loadLabel(pm).toString().contains(filter, ignoreCase = true) }
+            if (visible.isEmpty()) {
+                list.addView(label("Aplikasi tidak ditemukan", 15f, MUTED, false).apply {
+                    gravity = Gravity.CENTER
+                    setPadding(dp(20), dp(32), dp(20), dp(32))
+                }, LinearLayout.LayoutParams(M, W))
+            }
+            visible.forEach { app ->
+                val pkg = app.activityInfo.packageName
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(24), dp(12), dp(28), dp(12))
+                    minimumHeight = dp(94)
                 }
-                val item = getItem(pos)!!
-                r.addView(ImageView(context).apply { setImageDrawable(item.loadIcon(pm)) }, LinearLayout.LayoutParams(dp(36), dp(36)))
-                r.addView(TextView(context).apply {
-                    text = item.loadLabel(pm); setTextColor(Color.WHITE); setPadding(dp(12), 0, 0, 0)
-                })
-                return r
+                row.addView(ImageView(this).apply {
+                    setImageDrawable(app.loadIcon(pm))
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                }, LinearLayout.LayoutParams(dp(54), dp(54)))
+                row.addView(label(app.loadLabel(pm).toString(), 18f, Color.WHITE, true).apply {
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    setPadding(dp(22), 0, dp(12), 0)
+                }, LinearLayout.LayoutParams(0, W, 1f))
+                val toggle = Switch(this).apply {
+                    isChecked = pkg in selected
+                    showText = false
+                    thumbTintList = ColorStateList(
+                        arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
+                        intArrayOf(Color.WHITE, 0xFF929997.toInt())
+                    )
+                    trackTintList = ColorStateList(
+                        arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
+                        intArrayOf(0xFF20DFA8.toInt(), 0xFF303937.toInt())
+                    )
+                    setOnCheckedChangeListener { _, checked ->
+                        val now = Store.games(this@MainActivity).toMutableSet()
+                        if (checked) now.add(pkg) else now.remove(pkg)
+                        Store.saveGames(this@MainActivity, now.toList())
+                    }
+                }
+                row.addView(toggle, LinearLayout.LayoutParams(dp(64), dp(48)))
+                list.addView(row, LinearLayout.LayoutParams(M, W))
             }
         }
-        AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
-            .setTitle("Pilih game")
-            .setAdapter(adapter) { _, i ->
-                Store.saveGames(this, have + apps[i].activityInfo.packageName); select(0)
-            }
-            .setNegativeButton("Batal", null).show()
+        render()
+        search.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { render(s?.toString().orEmpty()) }
+            override fun afterTextChanged(s: Editable?) {}
+        })
+
+        content.removeAllViews()
+        content.addView(page, FrameLayout.LayoutParams(M, M))
     }
 
     private fun startGame(pkg: String) {
