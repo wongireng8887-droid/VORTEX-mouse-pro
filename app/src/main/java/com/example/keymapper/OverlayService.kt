@@ -1039,7 +1039,7 @@ class OverlayService : Service() {
                 MotionEvent.ACTION_DOWN -> {
                     downX = rx; downY = ry; lastX = rx; lastY = ry; moved = false; drag = NONE
                     val hit = maps.firstOrNull { m ->
-                        val hitRadius = if (m.kind == "TAP") dp(26) * (m.radius / 150f).coerceIn(0.4f, 2f) else dp(32)
+                        val hitRadius = if (m.kind == "TAP") dp(26) * (m.radius / 150f).coerceIn(0.4f, 2f) else dp(32).toFloat()
                         (m.kind == "TAP" || m.kind == "LOOK") && hypot(m.x - rx, m.y - ry).toFloat() < hitRadius
                     }
                     if (hit != null) {
