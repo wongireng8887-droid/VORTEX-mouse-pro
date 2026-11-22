@@ -1060,8 +1060,11 @@ class OverlayService : Service() {
         private val JOY = -1
         private val canvasView = MapCanvas(c)
         private val status = TextView(c)
-        private val panelBox = LinearLayout(c)
         private val addMenu = LinearLayout(c)
+        private val selBar = LinearLayout(c)
+        private val settingsBox = LinearLayout(c)
+        private val settingsTitle = TextView(c)
+        private val settingsBody = LinearLayout(c)
         private var sel = NONE
         private var drag = NONE
         private var moved = false
@@ -1069,10 +1072,20 @@ class OverlayService : Service() {
         private var downY = 0f
         private var lastX = 0f
         private var lastY = 0f
+        private var settingsOpen = false
+        private var listening = false
+        private var snap: List<Mapping> = emptyList()
+        private var nudgeRep: Runnable? = null
         private val original: List<Mapping> = maps
         private val modes = listOf("HOLD", "TAP", "REPEAT", "DOUBLE", "RELEASE")
-        private val modeLabels = listOf("Hold", "Tap", "Repeat", "Double", "Release")
-        private val hint = "Pilih tombol, lalu tahan lingkaran dan geser ke posisi game. Gunakan panah Geser untuk penyesuaian."
+        private val modeLabels = listOf("Hold", "Tap", "Repeat Tap", "Double Tap", "Release Tap")
+        private val modeHints = listOf(
+            "Sentuhan ditahan selama tombol ditekan.",
+            "Satu ketukan saat tombol ditekan.",
+            "Mengetuk berulang selama tombol ditahan.",
+            "Dua ketukan cepat saat tombol ditekan.",
+            "Satu ketukan saat tombol dilepas.")
+        private val hint = "Tap + untuk menambah. Tekan lingkaran lalu geser ke posisi tombol di game."
 
         init {
             setBackgroundColor(0x66000000)
@@ -1081,79 +1094,94 @@ class OverlayService : Service() {
             canvasView.touch = { e -> handleTouch(e) }
             addView(canvasView, FrameLayout.LayoutParams(MP, MP))
 
-            val top = LinearLayout(c).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(dp(10), dp(8), dp(10), dp(10))
-                background = rounded(0xF2111A17.toInt(), 16)
-                elevation = dp(12).toFloat()
-            }
-            val toolbar = LinearLayout(c).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER
-            }
-            toolbar.addView(iconChip(R.drawable.ic_add) {
+            val top = LinearLayout(c)
+            top.orientation = LinearLayout.VERTICAL
+            top.gravity = Gravity.CENTER_HORIZONTAL
+
+            // toolbar: + (tambah)   X (batal)   V (simpan & keluar)
+            val toolbar = LinearLayout(c)
+            toolbar.orientation = LinearLayout.HORIZONTAL
+            toolbar.gravity = Gravity.CENTER_VERTICAL
+            toolbar.setPadding(dp(6), dp(6), dp(6), dp(6))
+            toolbar.background = rounded(0xF2111A17.toInt(), 14)
+            toolbar.isClickable = true
+            toolbar.isFocusable = false
+            toolbar.addView(toolBtn(R.drawable.ic_add, false) {
                 addMenu.visibility = if (addMenu.visibility == View.VISIBLE) View.GONE else View.VISIBLE
             })
-            toolbar.addView(iconChip(R.drawable.ic_close) { persist(original); closeEditor() })
-            toolbar.addView(iconChip(R.drawable.ic_check) { closeEditor() })
+            toolbar.addView(toolBtn(R.drawable.ic_close, false) { persist(original); closeEditor() })
+            toolbar.addView(toolBtn(R.drawable.ic_check, false) { closeEditor() })
             top.addView(toolbar)
 
-            status.setTextColor(0xFFB8C9C2.toInt())
+            status.setTextColor(0xFFCFE3DA.toInt())
             status.textSize = 10f
             status.text = hint
             status.gravity = Gravity.CENTER
-            status.setPadding(0, dp(4), 0, dp(4))
-            top.addView(status)
+            status.setPadding(dp(10), dp(4), dp(10), dp(4))
+            status.background = rounded(0xB3000000.toInt(), 10)
+            top.addView(status, LinearLayout.LayoutParams(WC, WC).apply { topMargin = dp(6) })
 
+            // menu tipe kontrol (grid 3 x 2)
             addMenu.orientation = LinearLayout.VERTICAL
+            addMenu.setPadding(dp(5), dp(5), dp(5), dp(5))
+            addMenu.background = rounded(0xF2111A17.toInt(), 14)
+            addMenu.isClickable = true
+            addMenu.isFocusable = false
             addMenu.visibility = View.GONE
-            fun menuTile(label: String, icon: Int, enabled: Boolean = true, action: () -> Unit): TextView {
-                return TextView(c).apply {
-                    text = label
-                    setTextColor(if (enabled) Color.WHITE else 0xFF8A9A93.toInt())
-                    textSize = 11f
-                    typeface = Typeface.DEFAULT_BOLD
-                    gravity = Gravity.CENTER
-                    compoundDrawablePadding = dp(5)
-                    val d = getDrawable(icon)?.mutate()
-                    d?.setTint(if (enabled) Color.WHITE else 0xFF718078.toInt())
-                    d?.setBounds(0, 0, dp(24), dp(24))
-                    setCompoundDrawables(null, d, null, null)
-                    background = rounded(if (enabled) 0xFF07513D.toInt() else 0xFF26352F.toInt(), 10)
-                    alpha = if (enabled) 1f else 0.65f
-                    isEnabled = enabled
-                    layoutParams = LinearLayout.LayoutParams(0, dp(66), 1f).apply {
-                        setMargins(dp(3), dp(3), dp(3), dp(3))
-                    }
-                    setOnClickListener { if (enabled) action() }
-                }
-            }
-            fun menuRow(vararg tiles: TextView) = LinearLayout(c).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER
-                tiles.forEach { addView(it) }
-            }
-            addMenu.addView(menuRow(
-                menuTile("Joystick", R.drawable.ic_game) { addJoystick() },
-                menuTile("FPS Look", R.drawable.ic_mouse) { addLook() },
-                menuTile("Lihat Bebas", R.drawable.ic_ring, false) {}
-            ))
-            addMenu.addView(menuRow(
-                menuTile("Mengetik", R.drawable.ic_keyboard) { addButton() },
-                menuTile("Sentuh", R.drawable.ic_dot) { addButton() },
-                menuTile("Macro", R.drawable.ic_settings, false) {}
-            ))
-            top.addView(addMenu)
-            addView(top, FrameLayout.LayoutParams(dp(252), WC, Gravity.CENTER))
+            val g1 = row()
+            val g2 = row()
+            g1.addView(tile(R.drawable.ic_dot, "Sentuh", false) { addButton() })
+            g1.addView(tile(R.drawable.ic_game, "Joystick", false) { addJoystick() })
+            g1.addView(tile(R.drawable.ic_mouse, "FPS Look", false) { addLook() })
+            g2.addView(tile(R.drawable.ic_keyboard, "Template", false) { addMenu.visibility = View.GONE; applyTemplate() })
+            g2.addView(tile(R.drawable.ic_visibility, "Lihat Bebas", true) {})
+            g2.addView(tile(R.drawable.ic_settings, "Macro", true) {})
+            addMenu.addView(g1)
+            addMenu.addView(g2)
+            top.addView(addMenu, LinearLayout.LayoutParams(WC, WC).apply { topMargin = dp(6) })
 
-            panelBox.orientation = LinearLayout.VERTICAL
-            panelBox.setPadding(dp(12), dp(8), dp(12), dp(10))
-            panelBox.background = rounded(0xF2111A17.toInt(), 14)
-            panelBox.visibility = View.GONE
-            addView(panelBox, FrameLayout.LayoutParams(WC, WC, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = dp(8) })
+            // bar kontrol terpilih: nama, hapus, pengaturan, panah geser
+            selBar.orientation = LinearLayout.HORIZONTAL
+            selBar.gravity = Gravity.CENTER_VERTICAL
+            selBar.setPadding(dp(6), dp(6), dp(6), dp(6))
+            selBar.background = rounded(0xF2111A17.toInt(), 14)
+            selBar.isClickable = true
+            selBar.isFocusable = false
+            selBar.visibility = View.GONE
+            top.addView(selBar, LinearLayout.LayoutParams(WC, WC).apply { topMargin = dp(6) })
+
+            addView(top, FrameLayout.LayoutParams(WC, WC, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = dp(8) })
+
+            // panel pengaturan (muncul di sisi yang berlawanan dengan kontrol terpilih)
+            settingsBox.orientation = LinearLayout.VERTICAL
+            settingsBox.setPadding(dp(16), dp(14), dp(16), dp(12))
+            settingsBox.background = rounded(0xF2111A17.toInt(), 14)
+            settingsBox.isClickable = true
+            settingsBox.isFocusable = false
+            settingsBox.visibility = View.GONE
+            settingsTitle.setTextColor(Color.WHITE)
+            settingsTitle.textSize = 16f
+            settingsTitle.typeface = Typeface.DEFAULT_BOLD
+            settingsBox.addView(settingsTitle)
+            val sc = android.widget.ScrollView(c)
+            sc.isFocusable = false
+            sc.isVerticalScrollBarEnabled = false
+            settingsBody.orientation = LinearLayout.VERTICAL
+            sc.addView(settingsBody)
+            settingsBox.addView(sc, LinearLayout.LayoutParams(MP, 0, 1f).apply { topMargin = dp(6) })
+            val foot = row()
+            foot.addView(btn("BATAL", false) { persist(snap); select(NONE) },
+                LinearLayout.LayoutParams(0, dp(42), 1f).apply { rightMargin = dp(6) })
+            foot.addView(btn("SIMPAN", true) { settingsOpen = false; listening = false; refreshPanel() },
+                LinearLayout.LayoutParams(0, dp(42), 1f))
+            settingsBox.addView(foot, LinearLayout.LayoutParams(MP, WC).apply { topMargin = dp(8) })
+            addView(settingsBox, FrameLayout.LayoutParams(dp(300), MP, Gravity.END))
 
             setOnKeyListener { _, code, ev ->
-                if (ev.action == KeyEvent.ACTION_DOWN && ev.repeatCount == 0) assignKey(code)
+                if (ev.action == KeyEvent.ACTION_DOWN && ev.repeatCount == 0) {
+                    val m = selMapping()
+                    if (listening || (m != null && m.kind == "TAP" && m.keyCode == 0)) assignKey(code)
+                }
                 true
             }
         }
@@ -1161,6 +1189,154 @@ class OverlayService : Service() {
         override fun onAttachedToWindow() {
             super.onAttachedToWindow()
             requestFocus()
+        }
+
+        override fun onDetachedFromWindow() {
+            stopNudge()
+            super.onDetachedFromWindow()
+        }
+
+        // ----- komponen kecil -----
+        private fun toolBtn(res: Int, active: Boolean, a: () -> Unit): ImageView {
+            val v = ImageView(context)
+            v.setImageResource(res)
+            v.setColorFilter(Color.WHITE)
+            v.setPadding(dp(10), dp(8), dp(10), dp(8))
+            v.background = rounded(if (active) 0xFF16A06E.toInt() else 0xFF0F6B4B.toInt(), 10)
+            v.isFocusable = false
+            v.layoutParams = LinearLayout.LayoutParams(dp(52), dp(40)).apply { leftMargin = dp(4); rightMargin = dp(4) }
+            v.setOnClickListener { a() }
+            return v
+        }
+
+        private fun arrowBtn(res: Int, dx: Float, dy: Float): ImageView {
+            val v = ImageView(context)
+            v.setImageResource(res)
+            v.setColorFilter(Color.WHITE)
+            v.setPadding(dp(6), dp(6), dp(6), dp(6))
+            v.background = rounded(0xFF1F6F52.toInt(), 8)
+            v.isFocusable = false
+            v.layoutParams = LinearLayout.LayoutParams(dp(34), dp(30)).apply { leftMargin = dp(2); rightMargin = dp(2); topMargin = dp(2) }
+            // tekan = geser sedikit, tahan = geser terus
+            v.setOnTouchListener { _, ev ->
+                when (ev.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        nudge(dx, dy)
+                        stopNudge()
+                        val r = object : Runnable {
+                            override fun run() {
+                                nudge(dx, dy)
+                                this@EditorView.postDelayed(this, 45)
+                            }
+                        }
+                        nudgeRep = r
+                        this@EditorView.postDelayed(r, 320)
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> stopNudge()
+                }
+                true
+            }
+            return v
+        }
+
+        private fun stopNudge() {
+            nudgeRep?.let { removeCallbacks(it) }
+            nudgeRep = null
+        }
+
+        private fun tile(res: Int, t: String, locked: Boolean, a: () -> Unit): FrameLayout {
+            val f = FrameLayout(context)
+            f.background = rounded(if (locked) 0xFF1B2723.toInt() else 0xFF0F6B4B.toInt(), 12)
+            f.isFocusable = false
+            val col = LinearLayout(context)
+            col.orientation = LinearLayout.VERTICAL
+            col.gravity = Gravity.CENTER
+            val ic = ImageView(context)
+            ic.setImageResource(res)
+            ic.setColorFilter(if (locked) 0xFF7F8D87.toInt() else Color.WHITE)
+            col.addView(ic, LinearLayout.LayoutParams(dp(26), dp(26)))
+            val tv = TextView(context)
+            tv.text = t
+            tv.setTextColor(if (locked) 0xFF7F8D87.toInt() else Color.WHITE)
+            tv.textSize = 11f
+            tv.gravity = Gravity.CENTER
+            tv.setPadding(0, dp(5), 0, 0)
+            col.addView(tv)
+            f.addView(col, FrameLayout.LayoutParams(MP, MP))
+            if (locked) {
+                val lk = ImageView(context)
+                lk.setImageResource(R.drawable.ic_lock)
+                lk.setColorFilter(0xFFB9C4C0.toInt())
+                f.addView(lk, FrameLayout.LayoutParams(dp(14), dp(14), Gravity.END or Gravity.TOP).apply { topMargin = dp(5); rightMargin = dp(5) })
+            }
+            f.layoutParams = LinearLayout.LayoutParams(dp(86), dp(74)).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) }
+            f.setOnClickListener {
+                if (locked) Toast.makeText(context, "Belum tersedia", Toast.LENGTH_SHORT).show() else a()
+            }
+            return f
+        }
+
+        private fun btn(t: String, primary: Boolean, a: () -> Unit): TextView {
+            val v = TextView(context)
+            v.text = t
+            v.setTextColor(Color.WHITE)
+            v.textSize = 13f
+            v.typeface = Typeface.DEFAULT_BOLD
+            v.gravity = Gravity.CENTER
+            v.setPadding(dp(14), dp(8), dp(14), dp(8))
+            v.background = rounded(if (primary) 0xFF0F6B4B.toInt() else 0xFF1F2D28.toInt(), 10)
+            v.isFocusable = false
+            v.setOnClickListener { a() }
+            return v
+        }
+
+        private fun row(): LinearLayout = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+        }
+
+        private fun tabsRow(labels: List<String>, activeIdx: Int, onPick: (Int) -> Unit): LinearLayout {
+            val r = row()
+            labels.forEachIndexed { i, l ->
+                val on = i == activeIdx
+                val tv = TextView(context)
+                tv.text = l
+                tv.textSize = 11f
+                tv.gravity = Gravity.CENTER
+                tv.setTextColor(if (on) Color.BLACK else 0xFFB6C4BE.toInt())
+                tv.setPadding(dp(4), dp(9), dp(4), dp(9))
+                tv.background = rounded(if (on) MINT else 0xFF1F2D28.toInt(), 10)
+                tv.isFocusable = false
+                tv.setOnClickListener { onPick(i) }
+                r.addView(tv, LinearLayout.LayoutParams(0, WC, 1f).apply { leftMargin = dp(2); rightMargin = dp(2) })
+            }
+            return r
+        }
+
+        private fun stepRow(t: String, v: String, minus: () -> Unit, plus: () -> Unit): LinearLayout {
+            val r = row()
+            val name = TextView(context)
+            name.text = t
+            name.setTextColor(0xFF9FB3AB.toInt())
+            name.textSize = 13f
+            name.setPadding(dp(6), 0, 0, 0)
+            r.addView(name, LinearLayout.LayoutParams(0, WC, 1f))
+            r.addView(iconChip(R.drawable.ic_minus) { minus() })
+            val value = TextView(context)
+            value.text = v
+            value.setTextColor(Color.WHITE)
+            value.textSize = 14f
+            value.typeface = Typeface.DEFAULT_BOLD
+            value.gravity = Gravity.CENTER
+            r.addView(value, LinearLayout.LayoutParams(dp(52), WC))
+            r.addView(iconChip(R.drawable.ic_add) { plus() })
+            return r
+        }
+
+        private fun selName(m: Mapping): String = when {
+            isJoy(m) -> "Joystick"
+            m.kind == "LOOK" -> "FPS Look"
+            m.keyCode == 0 -> "Sentuh baru"
+            else -> "Sentuh " + keyName(m.keyCode)
         }
 
         // ----- pemilihan -----
@@ -1173,6 +1349,7 @@ class OverlayService : Service() {
         private fun selMapping(): Mapping? = maps.firstOrNull { isSel(it) }
 
         private fun select(s: Int) {
+            if (s != sel) { settingsOpen = false; listening = false }
             sel = s
             canvasView.selKey = s
             val m = selMapping()
@@ -1181,99 +1358,150 @@ class OverlayService : Service() {
             refreshPanel()
         }
 
-        private fun row(): LinearLayout = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-        }
-
         private fun refreshPanel() {
-            panelBox.removeAllViews()
+            stopNudge()
+            selBar.removeAllViews()
             val m = selMapping()
-            if (sel == NONE || m == null) { panelBox.visibility = View.GONE; return }
-            panelBox.visibility = View.VISIBLE
-            val title = when {
-                sel == JOY -> "Joystick - radius ${m.radius.toInt()}"
-                m.kind == "LOOK" -> "FPS Look - tombol: " + (if (m.trig == 0) "tekan tombol keyboard" else keyName(m.trig))
-                m.keyCode == 0 -> "Tombol baru - tekan tombol keyboard"
-                else -> "Tombol ${keyName(m.keyCode)}"
+            if (sel == NONE || m == null) {
+                selBar.visibility = View.GONE
+                settingsBox.visibility = View.GONE
+                settingsOpen = false
+                listening = false
+                return
             }
-            val t = TextView(context)
-            t.text = title; t.setTextColor(Color.WHITE); t.textSize = 13f; t.typeface = Typeface.DEFAULT_BOLD
-            panelBox.addView(t)
+            selBar.visibility = View.VISIBLE
+            val name = TextView(context)
+            name.text = selName(m)
+            name.setTextColor(Color.WHITE)
+            name.textSize = 13f
+            name.typeface = Typeface.DEFAULT_BOLD
+            name.gravity = Gravity.CENTER
+            name.setPadding(dp(14), dp(8), dp(14), dp(8))
+            name.background = rounded(0xFF0F6B4B.toInt(), 10)
+            selBar.addView(name, LinearLayout.LayoutParams(WC, dp(40)).apply { rightMargin = dp(6) })
+            selBar.addView(toolBtn(R.drawable.ic_trash, false) { deleteSel() })
+            selBar.addView(toolBtn(R.drawable.ic_settings, settingsOpen) { toggleSettings() })
 
-            val r1 = row()
-            r1.addView(chipIc("Hapus", R.drawable.ic_trash) { deleteSel() })
-            if (m.kind == "TAP") {
-                r1.addView(chip("Mouse Kiri") { assignKey(MOUSE_LEFT) })
-                r1.addView(chip("Mouse Kanan") { assignKey(MOUSE_RIGHT) })
-            }
-            if (m.kind == "LOOK") {
-                r1.addView(chip("Mouse Kanan") { assignKey(MOUSE_RIGHT) })
-                r1.addView(chip("Mouse Tengah") { assignKey(MOUSE_MID) })
-                r1.addView(chip("Kosongkan") { upd { it.copy(trig = 0) } })
-            }
-            panelBox.addView(r1)
+            val pad = LinearLayout(context)
+            pad.orientation = LinearLayout.VERTICAL
+            pad.gravity = Gravity.CENTER_HORIZONTAL
+            pad.addView(arrowBtn(R.drawable.ic_arrow_up, 0f, -3f))
+            val pr = LinearLayout(context)
+            pr.orientation = LinearLayout.HORIZONTAL
+            pr.addView(arrowBtn(R.drawable.ic_arrow_left, -3f, 0f))
+            pr.addView(arrowBtn(R.drawable.ic_arrow_down, 0f, 3f))
+            pr.addView(arrowBtn(R.drawable.ic_arrow_right, 3f, 0f))
+            pad.addView(pr)
+            selBar.addView(pad, LinearLayout.LayoutParams(WC, WC).apply { leftMargin = dp(8) })
 
-            val r2 = row()
-            if (m.kind == "TAP") {
-                r2.addView(lbl("Ukuran"))
-                r2.addView(iconChip(R.drawable.ic_minus) {
-                    upd { it.copy(radius = (it.radius - 15f).coerceIn(60f, 300f)) }
-                })
-                r2.addView(lbl("${(m.radius / 150f * 100).toInt()}%"))
-                r2.addView(iconChip(R.drawable.ic_add) {
-                    upd { it.copy(radius = (it.radius + 15f).coerceIn(60f, 300f)) }
-                })
-            } else if (m.kind == "LOOK") {
-                r2.addView(lbl("Sens"))
-                r2.addView(iconChip(R.drawable.ic_minus) { upd { it.copy(sens = (it.sens - 0.2f).coerceIn(0.2f, 5f)) } })
-                r2.addView(iconChip(R.drawable.ic_add) { upd { it.copy(sens = (it.sens + 0.2f).coerceIn(0.2f, 5f)) } })
-                r2.addView(lbl("Area"))
-                r2.addView(iconChip(R.drawable.ic_minus) { upd { it.copy(radius = (it.radius - 20f).coerceIn(60f, 600f)) } })
-                r2.addView(iconChip(R.drawable.ic_add) { upd { it.copy(radius = (it.radius + 20f).coerceIn(60f, 600f)) } })
+            if (settingsOpen) {
+                val lpS = settingsBox.layoutParams as FrameLayout.LayoutParams
+                lpS.gravity = if (m.x > width / 2f) Gravity.START else Gravity.END
+                settingsBox.layoutParams = lpS
+                settingsBox.visibility = View.VISIBLE
+                buildSettings(m)
             } else {
-                r2.addView(lbl("Radius"))
-                r2.addView(iconChip(R.drawable.ic_minus) { upd { it.copy(radius = (it.radius - 20f).coerceIn(60f, 420f)) } })
-                r2.addView(iconChip(R.drawable.ic_add) { upd { it.copy(radius = (it.radius + 20f).coerceIn(60f, 420f)) } })
+                settingsBox.visibility = View.GONE
             }
-            panelBox.addView(r2)
-
-            if (m.kind == "TAP") {
-                val rm = row()
-                modes.forEachIndexed { i, md ->
-                    val cc = chip(modeLabels[i]) { upd { it.copy(mode = md) } }
-                    if (m.mode == md) cc.background = rounded(0xFF0F6B4B.toInt(), 10)
-                    rm.addView(cc)
-                }
-                panelBox.addView(rm)
-            } else if (m.kind == "LOOK") {
-                val rm = row()
-                val tg = chip("Toggle (tekan = ON/OFF)") { upd { it.copy(mode = "TOGGLE") } }
-                val th = chip("Tahan (aktif saat ditahan)") { upd { it.copy(mode = "TAHAN") } }
-                if (m.mode == "TAHAN") th.background = rounded(0xFF0F6B4B.toInt(), 10)
-                else tg.background = rounded(0xFF0F6B4B.toInt(), 10)
-                rm.addView(tg)
-                rm.addView(th)
-                panelBox.addView(rm)
-            }
-
-            val r3 = row()
-            r3.addView(lbl("Geser"))
-            r3.addView(iconChip(R.drawable.ic_arrow_left) { nudge(-3f, 0f) })
-            r3.addView(iconChip(R.drawable.ic_arrow_up) { nudge(0f, -3f) })
-            r3.addView(iconChip(R.drawable.ic_arrow_down) { nudge(0f, 3f) })
-            r3.addView(iconChip(R.drawable.ic_arrow_right) { nudge(3f, 0f) })
-            panelBox.addView(r3)
         }
 
-        private fun upd(f: (Mapping) -> Mapping) {
+        private fun toggleSettings() {
+            settingsOpen = !settingsOpen
+            if (settingsOpen) snap = maps else listening = false
+            refreshPanel()
+        }
+
+        private fun addTrigger(code: Int, allowLeft: Boolean, canClear: Boolean) {
+            settingsBody.addView(lbl("Tombol Trigger"))
+            val kr = row()
+            val kt = TextView(context)
+            kt.text = if (listening) "Tekan tombol keyboard..." else if (code == 0) "Belum ada tombol" else keyName(code)
+            kt.setTextColor(MINT)
+            kt.textSize = 14f
+            kt.typeface = Typeface.DEFAULT_BOLD
+            kt.setPadding(dp(8), dp(6), dp(4), dp(6))
+            kr.addView(kt, LinearLayout.LayoutParams(0, WC, 1f))
+            kr.addView(btn("ASSIGN", true) { listening = true; refreshPanel() })
+            settingsBody.addView(kr)
+            val hs = android.widget.HorizontalScrollView(context)
+            hs.isFocusable = false
+            hs.isHorizontalScrollBarEnabled = false
+            val mr = row()
+            if (allowLeft) mr.addView(chip("Mouse Kiri") { assignKey(MOUSE_LEFT) })
+            mr.addView(chip("Mouse Kanan") { assignKey(MOUSE_RIGHT) })
+            mr.addView(chip("Mouse Tengah") { assignKey(MOUSE_MID) })
+            if (canClear) mr.addView(chip("Kosongkan") { listening = false; upd { it.copy(trig = 0) } })
+            hs.addView(mr)
+            settingsBody.addView(hs)
+        }
+
+        private fun buildSettings(m: Mapping) {
+            settingsTitle.text = "Pengaturan " + selName(m)
+            settingsBody.removeAllViews()
+            if (m.kind == "TAP") {
+                addTrigger(m.keyCode, true, false)
+                settingsBody.addView(lbl("Mode"))
+                val idx = modes.indexOf(m.mode).coerceAtLeast(0)
+                settingsBody.addView(tabsRow(modeLabels.subList(0, 3), if (idx < 3) idx else -1) { i ->
+                    upd { mm -> mm.copy(mode = modes[i]) }
+                })
+                settingsBody.addView(tabsRow(modeLabels.subList(3, 5), if (idx >= 3) idx - 3 else -1) { i ->
+                    upd { mm -> mm.copy(mode = modes[i + 3]) }
+                }, LinearLayout.LayoutParams(MP, WC).apply { topMargin = dp(4) })
+                val mh = TextView(context)
+                mh.text = modeHints[idx]
+                mh.setTextColor(0xFF8FA39B.toInt())
+                mh.textSize = 12f
+                mh.setPadding(dp(8), dp(8), dp(6), dp(4))
+                settingsBody.addView(mh)
+                settingsBody.addView(stepRow("Ukuran", "${(m.radius / 150f * 100).toInt()}%",
+                    { upd { mm -> mm.copy(radius = (mm.radius - 15f).coerceIn(60f, 300f)) } },
+                    { upd { mm -> mm.copy(radius = (mm.radius + 15f).coerceIn(60f, 300f)) } }))
+            } else if (m.kind == "LOOK") {
+                addTrigger(m.trig, false, true)
+                settingsBody.addView(lbl("Mode"))
+                settingsBody.addView(tabsRow(listOf("Toggle", "Tahan"), if (m.mode == "TAHAN") 1 else 0) { i ->
+                    upd { mm -> mm.copy(mode = if (i == 1) "TAHAN" else "TOGGLE") }
+                })
+                val mh = TextView(context)
+                mh.text = if (m.mode == "TAHAN") "Kamera aktif selama tombol ditahan." else "Tekan sekali = kamera ON, tekan lagi = OFF."
+                mh.setTextColor(0xFF8FA39B.toInt())
+                mh.textSize = 12f
+                mh.setPadding(dp(8), dp(8), dp(6), dp(4))
+                settingsBody.addView(mh)
+                settingsBody.addView(stepRow("Sensitivitas", "%.1f".format(m.sens),
+                    { upd { mm -> mm.copy(sens = (mm.sens - 0.2f).coerceIn(0.2f, 5f)) } },
+                    { upd { mm -> mm.copy(sens = (mm.sens + 0.2f).coerceIn(0.2f, 5f)) } }))
+                settingsBody.addView(stepRow("Area putar", m.radius.toInt().toString(),
+                    { upd { mm -> mm.copy(radius = (mm.radius - 20f).coerceIn(60f, 600f)) } },
+                    { upd { mm -> mm.copy(radius = (mm.radius + 20f).coerceIn(60f, 600f)) } }))
+            } else {
+                settingsBody.addView(stepRow("Radius joystick", m.radius.toInt().toString(),
+                    { upd { mm -> mm.copy(radius = (mm.radius - 20f).coerceIn(60f, 420f)) } },
+                    { upd { mm -> mm.copy(radius = (mm.radius + 20f).coerceIn(60f, 420f)) } }))
+                val mh = TextView(context)
+                mh.text = "Joystick memakai tombol W A S D."
+                mh.setTextColor(0xFF8FA39B.toInt())
+                mh.textSize = 12f
+                mh.setPadding(dp(8), dp(8), dp(6), dp(4))
+                settingsBody.addView(mh)
+            }
+        }
+
+        // ubah mapping terpilih tanpa membangun ulang panel (dipakai panah geser)
+        private fun updQuiet(f: (Mapping) -> Mapping) {
             persist(maps.map { if (isSel(it)) f(it) else it })
             val m = selMapping()
             canvasView.selPos = if (m == null) null else PointF(m.x, m.y)
             canvasView.invalidate()
+        }
+
+        private fun upd(f: (Mapping) -> Mapping) {
+            updQuiet(f)
             refreshPanel()
         }
 
-        private fun nudge(dx: Float, dy: Float) = upd { it.copy(x = it.x + dx, y = it.y + dy) }
+        private fun nudge(dx: Float, dy: Float) = updQuiet { it.copy(x = it.x + dx, y = it.y + dy) }
 
         private fun deleteSel() {
             persist(maps.filter { !isSel(it) })
@@ -1292,6 +1520,7 @@ class OverlayService : Service() {
                     return
                 }
                 persist(maps.map { if (it === m) it.copy(trig = code) else it })
+                listening = false
                 select(LOOK_KEY)
                 status.text = "Pemicu FPS Look: ${keyName(code)}. Tekan di game untuk kamera ON/OFF."
                 return
@@ -1301,8 +1530,12 @@ class OverlayService : Service() {
                 return
             }
             persist(maps.map { if (it === m) it.copy(keyCode = code) else it })
+            val keep = settingsOpen
+            listening = false
             select(code)
-            status.text = "Tombol ${keyName(code)} dipasang. Geser ke posisinya."
+            settingsOpen = keep
+            refreshPanel()
+            status.text = "Tombol ${keyName(code)} dipasang. Geser lingkaran ke posisinya."
         }
 
         // ----- tambah kontrol -----
@@ -1315,15 +1548,18 @@ class OverlayService : Service() {
         private fun addButton() {
             addMenu.visibility = View.GONE
             if (maps.any { it.keyCode == 0 }) { select(0); return }
-            // Start in the clear right-hand area: the old screen center was covered
-            // by the editor toolbar, so users could not grab the newly-created control.
+            val before = maps
             val loc = IntArray(2)
             canvasView.getLocationOnScreen(loc)
             val x = loc[0] + canvasView.width * 0.78f
             val y = loc[1] + canvasView.height * 0.55f
             persist(maps + Mapping(0, "TAP", x, y))
             select(0)
-            status.text = "Tekan tombol keyboard / Mouse Kiri-Kanan. Lalu tahan lingkaran dan geser ke posisi game; gunakan panah Geser bila perlu."
+            snap = before
+            settingsOpen = true
+            listening = true
+            refreshPanel()
+            status.text = "Tekan tombol keyboard (atau pilih Mouse), lalu geser lingkaran ke posisi game."
         }
 
         private fun addJoystick() {
@@ -1344,12 +1580,17 @@ class OverlayService : Service() {
         private fun addLook() {
             addMenu.visibility = View.GONE
             if (maps.any { it.kind == "LOOK" }) { Toast.makeText(context, "FPS Look sudah ada", Toast.LENGTH_SHORT).show(); select(LOOK_KEY); return }
+            val before = maps
             val loc = IntArray(2)
             canvasView.getLocationOnScreen(loc)
             val x = loc[0] + canvasView.width * 0.70f
             val y = loc[1] + canvasView.height * 0.45f
             persist(maps + Mapping(LOOK_KEY, "LOOK", x, y, canvasView.height * 0.18f, "TOGGLE", 1f))
             select(LOOK_KEY)
+            snap = before
+            settingsOpen = true
+            listening = true
+            refreshPanel()
             status.text = "FPS Look: geser lingkaran ke area kamera, lalu tekan tombol keyboard (atau Mouse Kanan/Tengah) sebagai pemicu."
         }
 
