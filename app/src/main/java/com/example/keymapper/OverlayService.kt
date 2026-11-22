@@ -559,11 +559,18 @@ class OverlayService : Service() {
                 requestPointerCapture(); showCursor()
             } else {
                 hideCursor()
-                if (lookActive) {
-                    lookActive = false
-                    lookRebasePending = false
-                    refresh() // releases the injected LOOK pointer
-                }
+                // Android may omit a final key/button UP when pointer capture loses
+                // focus. Clear held states and release all virtual touches together.
+                lookActive = false
+                lookRebasePending = false
+                prevButtons = 0
+                cursorDown = false
+                leftByCursor = false
+                pressed.clear()
+                pulsing.clear()
+                repeaters.values.forEach { handler.removeCallbacks(it) }
+                repeaters.clear()
+                refresh()
             }
         }
     }

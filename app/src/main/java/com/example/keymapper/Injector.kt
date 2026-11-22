@@ -5,6 +5,7 @@ import java.io.BufferedReader
 import java.io.InputStream
 import java.io.InputStreamReader
 import java.io.OutputStream
+import java.util.ArrayDeque
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -19,6 +20,10 @@ object Injector {
     var onChange: (() -> Unit)? = null
     private var conn: Conn? = null
     private val lock = Any()
+    private val queueLock = Any()
+    private data class TouchCommand(val action: Int, val id: Int, val x: Float = 0f, val y: Float = 0f)
+    private val touchQueue = ArrayDeque<TouchCommand>()
+    private var drainingQueue = false
     private var lastAuto = 0L
 
     private fun cmdLine(ctx: Context): String =
@@ -91,31 +96,109 @@ object Injector {
         }
     }
 
+    // Mouse-look can produce many MOVE events per frame. Never write/flush the
+    // Shizuku pipe on the UI thread: serialize injection on a worker and collapse
+    // consecutive MOVE updates for the same pointer when the worker falls behind.
     fun touch(action: Int, id: Int, x: Float, y: Float): Boolean {
-        val o = conn?.output ?: return false
-        if (!ready) return false
-        val line = when (action) { 0 -> "D $id $x $y"; 1 -> "M $id $x $y"; else -> "U $id" } + "\n"
-        return try {
-            synchronized(lock) { o.write(line.toByteArray()); o.flush() }
-            true
-        } catch (e: Exception) {
-            ready = false
-            changed()
-            false
+        if (!ready || conn?.output == null) return false
+        synchronized(queueLock) {
+            val command = TouchCommand(action, id, x, y)
+            if (action == 1) {
+                // Collapse queued MOVE updates for this pointer even when other
+                // pointers' MOVE commands are interleaved. Never cross a DOWN/UP
+                // boundary for the same pointer.
+                val pending = touchQueue.toList()
+                val barrier = pending.indexOfLast { it.id == id && it.action != 1 }
+                val oldMove = pending.indexOfLast { it.id == id && it.action == 1 }
+                if (oldMove > barrier) {
+                    val compacted = pending.toMutableList().apply { removeAt(oldMove) }
+                    touchQueue.clear()
+                    touchQueue.addAll(compacted)
+                }
+            }
+            touchQueue.addLast(command)
+            if (!drainingQueue) {
+                drainingQueue = true
+                Thread({ drainTouchQueue() }, "VortexTouchQueue").apply { isDaemon = true; start() }
+            }
+        }
+        return true
+    }
+
+    private fun drainTouchQueue() {
+        while (true) {
+            val command = synchronized(queueLock) {
+                if (touchQueue.isEmpty()) {
+                    drainingQueue = false
+                    null
+                } else touchQueue.removeFirst()
+            } ?: return
+
+            val output = conn?.output
+            if (output == null || !ready) {
+                synchronized(queueLock) {
+                    touchQueue.clear()
+                    drainingQueue = false
+                }
+                return
+            }
+            val line = when (command.action) {
+                0 -> "D ${command.id} ${command.x} ${command.y}"
+                1 -> "M ${command.id} ${command.x} ${command.y}"
+                2 -> "U ${command.id}"
+                else -> "R"
+            } + "\n"
+            val wrote = try {
+                synchronized(lock) {
+                    val current = conn?.output
+                    if (current == null || !ready) {
+                        false
+                    } else {
+                        current.write(line.toByteArray())
+                        current.flush()
+                        true
+                    }
+                }
+            } catch (e: Exception) {
+                ready = false
+                changed()
+                false
+            }
+            if (!wrote) {
+                synchronized(queueLock) {
+                    touchQueue.clear()
+                    drainingQueue = false
+                }
+                return
+            }
         }
     }
 
     fun releaseAll() {
-        val o = conn?.output ?: return
-        try { synchronized(lock) { o.write("R\n".toByteArray()); o.flush() } } catch (e: Exception) {}
+        if (!ready || conn?.output == null) return
+        synchronized(queueLock) {
+            // A global release must not sit behind stale mouse-motion backlog.
+            touchQueue.clear()
+            touchQueue.addLast(TouchCommand(3, 0))
+            if (!drainingQueue) {
+                drainingQueue = true
+                Thread({ drainTouchQueue() }, "VortexTouchQueue").apply { isDaemon = true; start() }
+            }
+        }
     }
 
     fun stop() {
         ready = false
+        synchronized(queueLock) { touchQueue.clear() }
         val c = conn
         conn = null
         if (c != null) {
-            try { c.output.write("Q\n".toByteArray()); c.output.flush() } catch (e: Exception) {}
+            try {
+                synchronized(lock) {
+                    c.output.write("Q\n".toByteArray())
+                    c.output.flush()
+                }
+            } catch (e: Exception) {}
             try { c.close() } catch (e: Exception) {}
         }
     }
