@@ -205,7 +205,7 @@ class MainActivity : Activity() {
             setPadding(dp(20), dp(10), dp(20), dp(6))
         }
         val logo = ImageView(this).apply {
-            setImageResource(R.drawable.vortex_mouse_logo)
+            setImageResource(R.drawable.vortex_app_icon)
             scaleType = ImageView.ScaleType.FIT_CENTER
             setBackgroundColor(Color.TRANSPARENT)
             contentDescription = "Vortex Mouse Pro"
