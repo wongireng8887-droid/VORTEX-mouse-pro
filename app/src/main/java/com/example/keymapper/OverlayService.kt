@@ -70,6 +70,7 @@ class OverlayService : Service() {
     // Saat recenter, jari look diangkat sebentar (lookGap) lalu dipasang lagi dengan id jari BARU,
     // supaya game tidak melihat lompatan posisi dari id yang sama.
     private var lookGap = false
+    private var lookGapAt = 0L
     private var lookSw = 0
     private var lookSh = 0
     private var lastLookSlot = -1
@@ -233,7 +234,36 @@ class OverlayService : Service() {
         }
     }
 
+    private var noFocusTicks = 0
+    private var notGameTicks = 0
+    private var lastCaptureReset = 0L
+    private var lastInjReset = 0L
+
+    // Pemulihan otomatis: injeksi macet atau penangkap mouse kehilangan fokus.
+    private fun watchdog() {
+        val now = android.os.SystemClock.uptimeMillis()
+        if (Injector.stuck() && now - lastInjReset > 5000) {
+            lastInjReset = now
+            Toast.makeText(this, "Injeksi macet, menyambung ulang...", Toast.LENGTH_SHORT).show()
+            Injector.restart(this)
+        }
+        val c = capture
+        if (c != null && bubble != null && enabledMap && !editing && panel == null) {
+            noFocusTicks = if (c.hasWindowFocus()) 0 else noFocusTicks + 1
+            if (noFocusTicks >= 2 && now - lastCaptureReset > 5000) {
+                noFocusTicks = 0
+                lastCaptureReset = now
+                try { wm?.removeView(c) } catch (e: Exception) {}
+                capture = null
+                updateCapture()
+            }
+        } else {
+            noFocusTicks = 0
+        }
+    }
+
     private fun evaluateForeground() {
+        try { watchdog() } catch (e: Exception) {}
         if (!Settings.canDrawOverlays(this)) return
         if (!hasUsageAccess()) {
             // belum bisa mendeteksi game: perilaku lama, logo tampil terus
@@ -243,10 +273,13 @@ class OverlayService : Service() {
         readForeground()
         val inGame = fgPkg.isNotEmpty() && fgPkg in Store.games(this)
         if (inGame) {
+            notGameTicks = 0
             if (Store.currentGame(this) != fgPkg) Store.setCurrentGame(this, fgPkg)
             if (bubble == null) showForGame()
         } else if (bubble != null) {
-            hideBubble()
+            // sembunyikan hanya jika bukan-game bertahan >= 2 pemeriksaan (hindari kedip akibat jendela sesaat)
+            notGameTicks++
+            if (notGameTicks >= 2) { notGameTicks = 0; hideBubble() }
         }
     }
 
@@ -347,8 +380,16 @@ class OverlayService : Service() {
         if (dx == 0f && dy == 0f) return
         lastEvt = "Mouse gerak"
         if (lookGap) {              // jari look sedang diangkat sebentar: tampung dulu
-            pendingLookDx += dx
-            pendingLookDy += dy
+            if (android.os.SystemClock.uptimeMillis() - lookGapAt > 100) {
+                // pengaman: jeda tidak boleh tersangkut
+                handler.removeCallbacks(lookRegrab)
+                pendingLookDx += dx
+                pendingLookDy += dy
+                lookRegrab.run()
+            } else {
+                pendingLookDx += dx
+                pendingLookDy += dy
+            }
             return
         }
         applyLook(dx, dy)
@@ -391,8 +432,9 @@ class OverlayService : Service() {
         val cur = live.remove("look")
         if (cur != null) Injector.touch(2, cur.first, cur.second.x, cur.second.y)   // angkat jari
         lookGap = true
+        lookGapAt = android.os.SystemClock.uptimeMillis()
         handler.removeCallbacks(lookRegrab)
-        handler.postDelayed(lookRegrab, 24)                                         // pasang lagi 24ms kemudian
+        handler.postDelayed(lookRegrab, 16)                                         // pasang lagi 16ms kemudian
     }
 
     private fun onMouseButtons(state: Int) {
@@ -1082,7 +1124,8 @@ class OverlayService : Service() {
         val shz = if (Injector.ready) "OK (" + Injector.mode + ")" else "putus"
         val mouse = if (capture?.hasPointerCapture() == true) "OK" else "belum"
         val st = TextView(this)
-        st.text = "Sambungan: $shz | Mouse: $mouse\nTerakhir: $lastEvt"
+        st.text = "Sambungan: $shz | Mouse: $mouse | Fokus: " + (if (capture?.hasWindowFocus() == true) "ya" else "tidak") +
+            "\nTerakhir: $lastEvt | Antrean: " + Injector.queued()
         st.setTextColor(0xFF8FA39B.toInt())
         st.textSize = 10f
         body.addView(st, LinearLayout.LayoutParams(MP, WC).apply { topMargin = dp(6); bottomMargin = dp(6) })

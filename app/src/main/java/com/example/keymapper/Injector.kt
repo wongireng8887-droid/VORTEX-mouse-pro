@@ -20,67 +20,71 @@ object Injector {
     var onChange: (() -> Unit)? = null
     private var conn: Conn? = null
     private val lock = Any()
-    private val queueLock = Any()
     private data class TouchCommand(val action: Int, val id: Int, val x: Float = 0f, val y: Float = 0f)
+    private val qLock = java.util.concurrent.locks.ReentrantLock()
+    private val qCond: java.util.concurrent.locks.Condition = qLock.newCondition()
     private val touchQueue = ArrayDeque<TouchCommand>()
-    private var drainingQueue = false
     private var lastAuto = 0L
-    // Single long-lived worker so we never thrash threads under high mouse+key load.
+    @Volatile private var lastProgress = 0L
     private val workerLock = Any()
     private var worker: Thread? = null
+
+    // Satu thread pekerja yang TIDAK pernah keluar sendiri: saat antrean kosong ia menunggu di condition.
+    // (Versi sebelumnya keluar saat antrean kosong, dan ada celah waktu di mana perintah baru masuk tepat
+    // sebelum thread benar-benar mati sehingga antrean macet selamanya = sentuhan/klik berhenti total.)
     private fun ensureWorker() {
         synchronized(workerLock) {
             val existing = worker
             if (existing != null && existing.isAlive) return
-            val t = Thread({
-                while (true) {
-                    val command = synchronized(queueLock) {
-                        if (touchQueue.isEmpty()) {
-                            drainingQueue = false
-                            null
-                        } else touchQueue.removeFirst()
-                    } ?: break
-                    val output = conn?.output
-                    if (output == null || !ready) {
-                        synchronized(queueLock) {
-                            touchQueue.clear()
-                            drainingQueue = false
-                        }
-                        break
-                    }
-                    val line = when (command.action) {
-                        0 -> "D ${command.id} ${command.x} ${command.y}"
-                        1 -> "M ${command.id} ${command.x} ${command.y}"
-                        2 -> "U ${command.id}"
-                        else -> "R"
-                    } + "\n"
-                    val wrote = try {
-                        synchronized(lock) {
-                            val current = conn?.output
-                            if (current == null || !ready) false
-                            else {
-                                current.write(line.toByteArray())
-                                current.flush()
-                                true
-                            }
-                        }
-                    } catch (e: Exception) {
-                        ready = false
-                        changed()
-                        false
-                    }
-                    if (!wrote) {
-                        synchronized(queueLock) {
-                            touchQueue.clear()
-                            drainingQueue = false
-                        }
-                        break
-                    }
-                }
-            }, "VortexTouchQueue")
+            val t = Thread({ workerLoop() }, "VortexTouchQueue")
             t.isDaemon = true
             worker = t
             t.start()
+        }
+    }
+
+    private fun clearQueue() {
+        qLock.lock()
+        try { touchQueue.clear() } finally { qLock.unlock() }
+    }
+
+    private fun workerLoop() {
+        while (true) {
+            var command: TouchCommand? = null
+            qLock.lock()
+            try {
+                while (touchQueue.isEmpty()) qCond.await()
+                command = touchQueue.removeFirst()
+            } catch (e: InterruptedException) {
+                return
+            } finally {
+                qLock.unlock()
+            }
+            val cmd = command ?: continue
+            try {
+                val line = when (cmd.action) {
+                    0 -> "D ${cmd.id} ${cmd.x} ${cmd.y}"
+                    1 -> "M ${cmd.id} ${cmd.x} ${cmd.y}"
+                    2 -> "U ${cmd.id}"
+                    else -> "R"
+                } + "\n"
+                val wrote = synchronized(lock) {
+                    val out = conn?.output
+                    if (out == null || !ready) false
+                    else {
+                        out.write(line.toByteArray())
+                        out.flush()
+                        true
+                    }
+                }
+                if (!wrote) clearQueue() else lastProgress = android.os.SystemClock.uptimeMillis()
+            } catch (e: Exception) {
+                ready = false
+                changed()
+                clearQueue()
+            } catch (t: Throwable) {
+                clearQueue()
+            }
         }
     }
 
@@ -159,54 +163,74 @@ object Injector {
     // consecutive MOVE updates for the same pointer when the worker falls behind.
     fun touch(action: Int, id: Int, x: Float, y: Float): Boolean {
         if (!ready || conn?.output == null) return false
-        synchronized(queueLock) {
-            val command = TouchCommand(action, id, x, y)
+        qLock.lock()
+        try {
             if (action == 1) {
-                // Drop ALL queued MOVE updates for this pointer after the last
-                // DOWN/UP barrier (not just one). Keeps only the latest position
-                // so look stays smooth while other fingers (fire, etc.) are held.
-                val pending = touchQueue.toList()
-                val barrier = pending.indexOfLast { it.id == id && it.action != 1 }
-                val compacted = pending.filterIndexed { index, cmd ->
-                    !(cmd.id == id && cmd.action == 1 && index > barrier)
+                // Buang MOVE lama untuk jari yang sama setelah DOWN/UP terakhir; cukup posisi terbaru.
+                val iter = touchQueue.descendingIterator()
+                while (iter.hasNext()) {
+                    val c = iter.next()
+                    if (c.action == 3 || (c.id == id && c.action != 1)) break
+                    if (c.id == id && c.action == 1) iter.remove()
                 }
-                touchQueue.clear()
-                touchQueue.addAll(compacted)
             }
-            touchQueue.addLast(command)
-            if (!drainingQueue) {
-                drainingQueue = true
-                ensureWorker()
-            }
+            if (touchQueue.isEmpty()) lastProgress = android.os.SystemClock.uptimeMillis()
+            touchQueue.addLast(TouchCommand(action, id, x, y))
+            qCond.signal()
+        } finally {
+            qLock.unlock()
         }
+        ensureWorker()
         return true
     }
 
     fun releaseAll() {
         if (!ready || conn?.output == null) return
-        synchronized(queueLock) {
-            // A global release must not sit behind stale mouse-motion backlog.
+        qLock.lock()
+        try {
+            // Lepas-semua tidak boleh antre di belakang tumpukan gerakan lama.
             touchQueue.clear()
             touchQueue.addLast(TouchCommand(3, 0))
-            if (!drainingQueue) {
-                drainingQueue = true
-                ensureWorker()
-            }
+            qCond.signal()
+        } finally {
+            qLock.unlock()
         }
+        ensureWorker()
+    }
+
+    fun queued(): Int {
+        qLock.lock()
+        try { return touchQueue.size } finally { qLock.unlock() }
+    }
+
+    // Antrean berisi tetapi tidak ada kemajuan >0,8 detik = penulisan ke shell macet.
+    fun stuck(): Boolean =
+        ready && queued() > 0 && android.os.SystemClock.uptimeMillis() - lastProgress > 800
+
+    fun restart(ctx: Context) {
+        val backend = mode
+        stop()
+        if (backend == "Shizuku" || backend == "ADB") connect(ctx, backend, null) else autoStart(ctx, null)
     }
 
     fun stop() {
         ready = false
-        synchronized(queueLock) { touchQueue.clear() }
+        clearQueue()
         val c = conn
         conn = null
         if (c != null) {
-            try {
-                synchronized(lock) {
-                    c.output.write("Q\n".toByteArray())
-                    c.output.flush()
-                }
-            } catch (e: Exception) {}
+            // Perintah Q ditulis di thread terpisah: jika penulis lain sedang tersangkut, jangan ikut macet.
+            val w = Thread {
+                try {
+                    synchronized(lock) {
+                        c.output.write("Q\n".toByteArray())
+                        c.output.flush()
+                    }
+                } catch (e: Exception) {}
+            }
+            w.isDaemon = true
+            w.start()
+            try { w.join(300) } catch (e: InterruptedException) {}
             try { c.close() } catch (e: Exception) {}
         }
     }
