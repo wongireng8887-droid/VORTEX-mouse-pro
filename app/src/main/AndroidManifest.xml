@@ -15,7 +15,7 @@
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
     </queries>
-    <application android:label="Vortex Mouse Pro" android:theme="@android:style/Theme.Material.NoActionBar">
+    <application android:label="Vortex Mouse Pro" android:icon="@mipmap/ic_launcher" android:theme="@android:style/Theme.Material.NoActionBar">
         <activity android:name=".MainActivity" android:exported="true"
             android:screenOrientation="sensorLandscape">
             <intent-filter>
