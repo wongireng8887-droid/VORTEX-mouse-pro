@@ -90,6 +90,9 @@ class OverlayService : Service() {
     private var capture: CaptureView? = null
     private var bubbleX = 40
     private var bubbleY = 260
+    private var cursorView: ImageView? = null
+    private var bubbleSizeDp = 60
+    private var bubbleOpacity = 1f
 
     private val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
         maps = Store.load(this)
@@ -104,6 +107,8 @@ class OverlayService : Service() {
         instance = this
         wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         maps = Store.load(this)
+        bubbleSizeDp = Store.prefs(this).getInt("bubble_size", 60).coerceIn(36, 96)
+        bubbleOpacity = Store.prefs(this).getFloat("bubble_opacity", 1f).coerceIn(0.2f, 1f)
         Store.prefs(this).registerOnSharedPreferenceChangeListener(listener)
         ShizukuBridge.init()
     }
@@ -111,14 +116,22 @@ class OverlayService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startFg()
         if (intent?.action == ACTION_HIDE) {
+            Store.prefs(this).edit().putBoolean("overlay_enabled", false).apply()
             shutdown()
         } else {
+            Store.prefs(this).edit().putBoolean("overlay_enabled", true).apply()
             showBubble()
             val ready = Injector.ready
             Toast.makeText(this, if (ready) "Siap. Tekan tombol keyboard / gerakkan mouse." else "Belum terhubung. Buka aplikasi, pilih cara sambung.",
                 Toast.LENGTH_LONG).show()
         }
         return START_NOT_STICKY
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // Keep the user preference so MainActivity can restore the bubble on next launch.
+        shutdown()
+        super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {
@@ -151,6 +164,16 @@ class OverlayService : Service() {
     // ---------- input keyboard & mouse ----------
     private fun handleKey(code: Int, down: Boolean, repeat: Int): Boolean {
         val ms = maps.filter { it.keyCode == code && it.kind != "LOOK" }
+        val look = maps.firstOrNull { it.kind == "LOOK" && it.keyCode == code }
+        if (look != null) {
+            if (down && repeat == 0) {
+                lookActive = !lookActive
+                if (!lookActive) { accX = 0f; accY = 0f; handler.removeCallbacks(lookIdle) }
+                else { lookX = look.x; lookY = look.y }
+                refresh()
+            }
+            return true
+        }
         if (ms.isEmpty()) return false
         lastEvt = keyName(code) + (if (down) " tekan" else " lepas")
         if (down) {
@@ -204,15 +227,15 @@ class OverlayService : Service() {
     }
 
     private fun onMouseMove(dx: Float, dy: Float) {
-        if (!enabledMap || editing) return
+        if (!enabledMap || editing || !lookActive) return
         lastEvt = "Mouse gerak"
         accX += dx; accY += dy
-        if (!flushPending) { flushPending = true; handler.postDelayed(flush, 8) }
+        if (!flushPending) { flushPending = true; handler.postDelayed(flush, 6) }
     }
 
     private fun applyLook(dx: Float, dy: Float) {
         val m = maps.firstOrNull { it.kind == "LOOK" } ?: return
-        if (!lookActive) { lookActive = true; lookX = m.x; lookY = m.y }
+        if (!lookActive) return
         lookX += dx * m.sens
         lookY += dy * m.sens
         if (hypot(lookX - m.x, lookY - m.y) > m.radius) {
@@ -220,8 +243,6 @@ class OverlayService : Service() {
             lookActive = true; lookX = m.x; lookY = m.y
         }
         refresh()
-        handler.removeCallbacks(lookIdle)
-        handler.postDelayed(lookIdle, 250)
     }
 
     private fun onMouseButtons(state: Int) {
@@ -244,7 +265,7 @@ class OverlayService : Service() {
             lookActive = false; accX = 0f; accY = 0f; flushPending = false
             refresh()
         }
-        bubble?.alpha = if (on) 1f else 0.5f
+        bubble?.alpha = bubbleOpacity * if (on) 1f else 0.5f
         applyHudVisibility()
         updateCapture()
         Toast.makeText(this, if (on) "Mapping ON" else "Mapping OFF (tap ikon mouse untuk membuka kontrol)", Toast.LENGTH_SHORT).show()
@@ -383,6 +404,7 @@ class OverlayService : Service() {
             setOnCapturedPointerListener { _, e ->
                 onMouseButtons(e.buttonState)
                 if (e.actionMasked == MotionEvent.ACTION_MOVE || e.actionMasked == MotionEvent.ACTION_HOVER_MOVE) {
+                    moveCursor(e.rawX, e.rawY)
                     onMouseMove(e.x, e.y)
                 }
                 true
@@ -400,7 +422,7 @@ class OverlayService : Service() {
 
         override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
             super.onWindowFocusChanged(hasWindowFocus)
-            if (hasWindowFocus) requestPointerCapture()
+            if (hasWindowFocus) { requestPointerCapture(); showCursor() } else hideCursor()
         }
     }
 
@@ -412,7 +434,7 @@ class OverlayService : Service() {
                 WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
                     WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM,
                 PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.START }
-            try { wm?.addView(v, lp); capture = v; v.requestFocus() } catch (e: Exception) {}
+            try { wm?.addView(v, lp); capture = v; v.requestFocus(); showCursor() } catch (e: Exception) {}
         } else if (!need && capture != null) {
             capture?.let { try { wm?.removeView(it) } catch (e: Exception) {} }
             capture = null
@@ -574,12 +596,12 @@ class OverlayService : Service() {
                 setImageResource(R.drawable.vortex_mouse_logo)
                 scaleType = ImageView.ScaleType.FIT_CENTER
                 setBackgroundColor(Color.TRANSPARENT)
-                layoutParams = FrameLayout.LayoutParams(dp(56), dp(56), Gravity.CENTER)
+                layoutParams = FrameLayout.LayoutParams(dp(bubbleSizeDp - 4), dp(bubbleSizeDp - 4), Gravity.CENTER)
             }
             addView(mouseIcon)
-            alpha = if (enabledMap) 1f else 0.55f
+            alpha = bubbleOpacity * if (enabledMap) 1f else 0.55f
         }
-        val lp = WindowManager.LayoutParams(dp(60), dp(60), overlayType(),
+        val lp = WindowManager.LayoutParams(dp(bubbleSizeDp), dp(bubbleSizeDp), overlayType(),
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT).apply {
             gravity = Gravity.TOP or Gravity.START; x = bubbleX; y = bubbleY
@@ -614,9 +636,58 @@ class OverlayService : Service() {
         closePanel(); closeEditor()
         bubble?.let { try { wm?.removeView(it) } catch (e: Exception) {} }
         bubble = null
+        hideCursor()
         updateCapture()
         hideHud()
         Injector.releaseAll(); live.clear()
+    }
+
+    private fun openPanelSizeControls() {
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(8), dp(6), dp(8), dp(8))
+            background = rounded(0xF2111A17.toInt(), 14)
+        }
+        col.addView(chip("−") { bubbleSizeDp = (bubbleSizeDp - 8).coerceIn(36, 96); Store.prefs(this).edit().putInt("bubble_size", bubbleSizeDp).apply(); resizeBubble(); closePanel() })
+        col.addView(chip("${bubbleSizeDp}dp") { closePanel(); openPanel() })
+        col.addView(chip("+") { bubbleSizeDp = (bubbleSizeDp + 8).coerceIn(36, 96); Store.prefs(this).edit().putInt("bubble_size", bubbleSizeDp).apply(); resizeBubble(); closePanel() })
+        val lp = WindowManager.LayoutParams(WC, WC, overlayType(), WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT).apply {
+            gravity = Gravity.TOP or Gravity.START; x = bubbleX + dp(58); y = bubbleY
+        }
+        try { wm?.addView(col, lp); panel = col } catch (_: Exception) {}
+    }
+
+    private fun resizeBubble() {
+        val v = bubble ?: return
+        val lp = v.layoutParams as WindowManager.LayoutParams
+        lp.width = dp(bubbleSizeDp); lp.height = dp(bubbleSizeDp)
+        (v.getChildAt(0) as? ImageView)?.let { it.layoutParams = FrameLayout.LayoutParams(dp(bubbleSizeDp - 4), dp(bubbleSizeDp - 4), Gravity.CENTER) }
+        try { wm?.updateViewLayout(v, lp) } catch (_: Exception) {}
+    }
+
+    private fun showCursor() {
+        if (cursorView != null || bubble == null) return
+        val v = ImageView(this).apply {
+            setImageResource(R.drawable.vortex_mouse_logo)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            alpha = 0.95f
+        }
+        val lp = WindowManager.LayoutParams(dp(28), dp(28), overlayType(),
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.START; x = bubbleX; y = bubbleY }
+        try { wm?.addView(v, lp); cursorView = v } catch (_: Exception) {}
+    }
+
+    private fun moveCursor(x: Float, y: Float) {
+        val v = cursorView ?: return
+        val lp = v.layoutParams as? WindowManager.LayoutParams ?: return
+        lp.x = x.toInt(); lp.y = y.toInt()
+        try { wm?.updateViewLayout(v, lp) } catch (_: Exception) {}
+    }
+
+    private fun hideCursor() {
+        cursorView?.let { try { wm?.removeView(it) } catch (_: Exception) {} }
+        cursorView = null
     }
 
     private fun menuItem(t: String, a: () -> Unit): TextView = chip(t, a).apply {
@@ -657,6 +728,8 @@ class OverlayService : Service() {
                 closePanel()
             })
         }
+        col.addView(menuItem("Ukuran logo: ${bubbleSizeDp}dp  (− / +)") { closePanel(); openPanelSizeControls() })
+        col.addView(menuItem("Transparansi: ${(bubbleOpacity * 100).toInt()}%  (ubah)") { bubbleOpacity = if (bubbleOpacity >= 0.99f) 0.75f else if (bubbleOpacity >= 0.7f) 0.5f else 1f; Store.prefs(this).edit().putFloat("bubble_opacity", bubbleOpacity).apply(); bubble?.alpha = bubbleOpacity * if (enabledMap) 1f else 0.55f; closePanel() })
         col.addView(menuItem("Edit tombol") { closePanel(); openEditor() })
         col.addView(menuItem("Sembunyikan") { shutdown() })
         try { wm?.addView(col, lp); panel = col } catch (e: Exception) {}
@@ -907,7 +980,7 @@ class OverlayService : Service() {
             val y = loc[1] + canvasView.height * 0.45f
             persist(maps + Mapping(LOOK_KEY, "LOOK", x, y, canvasView.height * 0.18f, "HOLD", 1f))
             select(LOOK_KEY)
-            status.text = "FPS Look: geser lingkaran ke area putar kamera. Gerakkan mouse untuk memutar."
+            status.text = "FPS Look: geser lingkaran ke area kamera, pilih tombol pemicu, lalu tekan untuk ON/OFF."
         }
 
         // ----- sentuhan di editor -----

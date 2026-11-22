@@ -116,6 +116,9 @@ class MainActivity : Activity() {
         super.onResume()
         (getSystemService(Context.INPUT_SERVICE) as InputManager).registerInputDeviceListener(inputListener, null)
         Injector.autoStart(this, null)
+        if (Store.prefs(this).getBoolean("overlay_enabled", false) && OverlayService.instance == null && Settings.canDrawOverlays(this)) {
+            startForegroundService(Intent(this, OverlayService::class.java).setAction(OverlayService.ACTION_SHOW))
+        }
         select(tab)
     }
 
@@ -653,7 +656,7 @@ class MainActivity : Activity() {
             setOnCheckedChangeListener { _, checked ->
                 if (checked) {
                     if (!Settings.canDrawOverlays(this@MainActivity)) { toast("Izinkan tampil di atas aplikasi lain dulu"); isChecked = false }
-                    else startForegroundService(Intent(this@MainActivity, OverlayService::class.java).setAction(OverlayService.ACTION_SHOW))
+                    else { Store.prefs(this@MainActivity).edit().putBoolean("overlay_enabled", true).apply(); startForegroundService(Intent(this@MainActivity, OverlayService::class.java).setAction(OverlayService.ACTION_SHOW)) }
                 } else {
                     startService(Intent(this@MainActivity, OverlayService::class.java).setAction(OverlayService.ACTION_HIDE))
                 }
