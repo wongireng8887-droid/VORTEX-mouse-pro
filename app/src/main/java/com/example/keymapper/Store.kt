@@ -15,7 +15,8 @@ const val LOOK_KEY = 20001
 // mode (untuk TAP): HOLD, TAP, REPEAT, DOUBLE, RELEASE
 data class Mapping(
     val keyCode: Int, val kind: String, val x: Float, val y: Float,
-    val radius: Float = 150f, val mode: String = "HOLD", val sens: Float = 1f
+    val radius: Float = 150f, val mode: String = "HOLD", val sens: Float = 1f,
+    val trig: Int = 0
 )
 
 fun keyName(code: Int): String = when (code) {
@@ -121,7 +122,7 @@ object Store {
                 out.add(Mapping(o.getInt("k"), o.getString("t"),
                     o.getDouble("x").toFloat(), o.getDouble("y").toFloat(),
                     o.optDouble("r", 150.0).toFloat(), o.optString("m", "HOLD"),
-                    o.optDouble("s", 1.0).toFloat()))
+                    o.optDouble("s", 1.0).toFloat(), o.optInt("g", 0)))
             }
         } catch (e: Exception) {}
         return out
@@ -132,7 +133,7 @@ object Store {
         list.forEach {
             a.put(JSONObject().put("k", it.keyCode).put("t", it.kind)
                 .put("x", it.x.toDouble()).put("y", it.y.toDouble()).put("r", it.radius.toDouble())
-                .put("m", it.mode).put("s", it.sens.toDouble()))
+                .put("m", it.mode).put("s", it.sens.toDouble()).put("g", it.trig))
         }
         return a.toString()
     }

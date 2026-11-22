@@ -90,7 +90,15 @@ class OverlayService : Service() {
     private var capture: CaptureView? = null
     private var bubbleX = 40
     private var bubbleY = 260
-    private var cursorView: ImageView? = null
+    private var cursorLayer: FrameLayout? = null
+    private var cursorImg: ImageView? = null
+    private var curX = -1f
+    private var curY = -1f
+    private var cursorSpeed = 1.5f
+    private var cursorDown = false
+    private var leftByCursor = false
+    private var cursorFlushPending = false
+    private val cursorFlush = Runnable { cursorFlushPending = false; if (cursorDown) refresh() }
     private var bubbleSizeDp = 60
     private var bubbleOpacity = 1f
 
@@ -109,6 +117,7 @@ class OverlayService : Service() {
         maps = Store.load(this)
         bubbleSizeDp = Store.prefs(this).getInt("bubble_size", 60).coerceIn(36, 96)
         bubbleOpacity = Store.prefs(this).getFloat("bubble_opacity", 1f).coerceIn(0.2f, 1f)
+        cursorSpeed = Store.prefs(this).getFloat("cursor_speed", 1.5f).coerceIn(0.5f, 4f)
         Store.prefs(this).registerOnSharedPreferenceChangeListener(listener)
         ShizukuBridge.init()
     }
@@ -164,13 +173,13 @@ class OverlayService : Service() {
     // ---------- input keyboard & mouse ----------
     private fun handleKey(code: Int, down: Boolean, repeat: Int): Boolean {
         val ms = maps.filter { it.keyCode == code && it.kind != "LOOK" }
-        val look = maps.firstOrNull { it.kind == "LOOK" && it.keyCode == code }
+        val look = if (code == 0) null else maps.firstOrNull { it.kind == "LOOK" && it.trig == code }
         if (look != null) {
-            if (down && repeat == 0) {
-                lookActive = !lookActive
-                if (!lookActive) { accX = 0f; accY = 0f; handler.removeCallbacks(lookIdle) }
-                else { lookX = look.x; lookY = look.y }
-                refresh()
+            lastEvt = keyName(code) + (if (down) " tekan" else " lepas")
+            if (look.mode == "TAHAN") {
+                if (repeat == 0) setLook(down, look)
+            } else if (down && repeat == 0) {
+                setLook(!lookActive, look)
             }
             return true
         }
@@ -253,8 +262,41 @@ class OverlayService : Service() {
             MotionEvent.BUTTON_SECONDARY to MOUSE_RIGHT,
             MotionEvent.BUTTON_TERTIARY to MOUSE_MID)
         for ((bit, code) in pairs) {
-            if ((changed and bit) != 0) handleKey(code, (state and bit) != 0, 0)
+            if ((changed and bit) == 0) continue
+            val down = (state and bit) != 0
+            if (code == MOUSE_LEFT && cursorClick(down)) continue
+            handleKey(code, down, 0)
         }
+    }
+
+    // Klik kiri saat mode kursor (FPS Look OFF) = sentuhan di posisi kursor (bisa ditahan / geser).
+    private fun cursorClick(down: Boolean): Boolean {
+        if (!down) {
+            if (leftByCursor) { leftByCursor = false; cursorDown = false; refresh(); return true }
+            return false
+        }
+        if (!enabledMap || editing || lookActive) return false
+        // klik kiri dipakai sebagai pemicu FPS Look -> biarkan handleKey yang mengurus
+        if (maps.any { it.kind == "LOOK" && it.trig == MOUSE_LEFT }) return false
+        val leftMapped = maps.any { it.kind != "LOOK" && it.keyCode == MOUSE_LEFT }
+        val hasLook = maps.any { it.kind == "LOOK" }
+        // tanpa marker FPS Look, klik kiri yang sudah dipetakan tetap jadi tombol biasa
+        if (leftMapped && !hasLook) return false
+        if (curX < 0f || curY < 0f) return false
+        leftByCursor = true
+        cursorDown = true
+        refresh()
+        return true
+    }
+
+    private fun setLook(on: Boolean, m: Mapping) {
+        if (on == lookActive) return
+        accX = 0f; accY = 0f; flushPending = false
+        handler.removeCallbacks(flush)
+        handler.removeCallbacks(lookIdle)
+        if (on) { lookActive = true; lookX = m.x; lookY = m.y } else lookActive = false
+        updateCursorVisibility()
+        refresh()
     }
 
     private fun setMapping(on: Boolean) {
@@ -263,6 +305,7 @@ class OverlayService : Service() {
             pressed.clear(); pulsing.clear(); repeaters.clear()
             handler.removeCallbacksAndMessages(null)
             lookActive = false; accX = 0f; accY = 0f; flushPending = false
+            cursorDown = false; leftByCursor = false; cursorFlushPending = false
             refresh()
         }
         bubble?.alpha = bubbleOpacity * if (on) 1f else 0.5f
@@ -298,6 +341,7 @@ class OverlayService : Service() {
             val len = hypot(jx, jy)
             if (len > 0f) t["joy"] = PointF(it.x, it.y) to PointF(it.x + jx / len * it.radius, it.y + jy / len * it.radius)
         }
+        if (cursorDown && curX >= 0f) t["cur"] = PointF(curX, curY) to PointF(curX, curY)
         desired = t
         hud?.invalidate()
         if (t.isNotEmpty() && !Injector.ready) {
@@ -404,8 +448,7 @@ class OverlayService : Service() {
             setOnCapturedPointerListener { _, e ->
                 onMouseButtons(e.buttonState)
                 if (e.actionMasked == MotionEvent.ACTION_MOVE || e.actionMasked == MotionEvent.ACTION_HOVER_MOVE) {
-                    moveCursor(e.rawX, e.rawY)
-                    onMouseMove(e.x, e.y)
+                    if (lookActive) onMouseMove(e.x, e.y) else moveCursorBy(e.x, e.y)
                 }
                 true
             }
@@ -440,6 +483,8 @@ class OverlayService : Service() {
             capture = null
             handler.removeCallbacks(lookIdle)
             if (lookActive) { lookActive = false; refresh() }
+            if (cursorDown) { cursorDown = false; leftByCursor = false; refresh() }
+            hideCursor()
             prevButtons = 0
         }
     }
@@ -501,7 +546,7 @@ class OverlayService : Service() {
             paint.pathEffect = DashPathEffect(floatArrayOf(dp(8).toFloat(), dp(6).toFloat()), 0f)
             cv.drawCircle(cx, cy, m.radius, paint)
             paint.pathEffect = null
-            drawKey(cv, cx, cy, "Look", sel, lookActive, (m.radius / 150f).coerceIn(0.4f, 2f))
+            drawKey(cv, cx, cy, if (m.trig != 0) "Look " + shortName(m.trig) else "Look", sel, lookActive, (m.radius / 150f).coerceIn(0.4f, 2f))
         }
 
         private fun drawJoy(cv: Canvas, g: List<Mapping>, loc: IntArray) {
@@ -579,6 +624,7 @@ class OverlayService : Service() {
 
     private fun applyHudVisibility() {
         hud?.visibility = if (enabledMap && hudVisible && !editing) View.VISIBLE else View.INVISIBLE
+        updateCursorVisibility()
     }
 
     // ---------- bubble ----------
@@ -622,7 +668,8 @@ class OverlayService : Service() {
                         }
                     }
                     MotionEvent.ACTION_UP -> if (!moved) {
-                        if (editor == null) openEditor() else closeEditor()
+                        if (editor != null) closeEditor()
+                        else if (panel == null) openPanel() else closePanel()
                     }
                 }
                 return true
@@ -667,30 +714,83 @@ class OverlayService : Service() {
         try { wm?.updateViewLayout(v, lp) } catch (_: Exception) {}
     }
 
-    private fun showCursor() {
-        if (cursorView != null || bubble == null) return
-        val v = ImageView(this).apply {
-            // Custom pointer: red arrow asset, separate from the floating Vortex logo.
-            setImageResource(R.drawable.vortex_cursor)
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            alpha = 0.98f
+    @Suppress("DEPRECATION")
+    private fun screenSize(): Pair<Int, Int> {
+        val dm0 = resources.displayMetrics
+        val w = wm ?: return dm0.widthPixels to dm0.heightPixels
+        return try {
+            if (Build.VERSION.SDK_INT >= 30) {
+                val b = w.currentWindowMetrics.bounds
+                b.width() to b.height()
+            } else {
+                val dm = android.util.DisplayMetrics()
+                w.defaultDisplay.getRealMetrics(dm)
+                dm.widthPixels to dm.heightPixels
+            }
+        } catch (e: Exception) {
+            dm0.widthPixels to dm0.heightPixels
         }
-        val lp = WindowManager.LayoutParams(dp(28), dp(28), overlayType(),
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.START; x = bubbleX; y = bubbleY }
-        try { wm?.addView(v, lp); cursorView = v } catch (_: Exception) {}
     }
 
-    private fun moveCursor(x: Float, y: Float) {
-        val v = cursorView ?: return
-        val lp = v.layoutParams as? WindowManager.LayoutParams ?: return
-        lp.x = x.toInt(); lp.y = y.toInt()
-        try { wm?.updateViewLayout(v, lp) } catch (_: Exception) {}
+    private fun placeCursor() {
+        val layer = cursorLayer ?: return
+        val img = cursorImg ?: return
+        val loc = IntArray(2)
+        layer.getLocationOnScreen(loc)
+        img.translationX = curX - loc[0]
+        img.translationY = curY - loc[1]
+    }
+
+    private fun showCursor() {
+        if (cursorLayer != null || bubble == null) return
+        if (curX < 0f || curY < 0f) {
+            val (sw, sh) = screenSize()
+            curX = sw / 2f; curY = sh / 2f
+        }
+        val layer = FrameLayout(this)
+        val img = ImageView(this)
+        img.setImageResource(R.drawable.vortex_cursor)
+        img.scaleType = ImageView.ScaleType.FIT_CENTER
+        img.alpha = 0.98f
+        layer.addView(img, FrameLayout.LayoutParams(dp(28), dp(28)))
+        val lp = WindowManager.LayoutParams(MP, MP, overlayType(),
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT)
+        if (Build.VERSION.SDK_INT >= 28) {
+            lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        }
+        try {
+            wm?.addView(layer, lp)
+            cursorLayer = layer
+            cursorImg = img
+            layer.post { placeCursor() }
+            updateCursorVisibility()
+        } catch (_: Exception) {}
+    }
+
+    // Mouse tertangkap (pointer capture) memberi pergeseran relatif, bukan posisi layar.
+    private fun moveCursorBy(dx: Float, dy: Float) {
+        if (!enabledMap || editing || lookActive) return
+        val (sw, sh) = screenSize()
+        if (curX < 0f || curY < 0f) { curX = sw / 2f; curY = sh / 2f }
+        curX = (curX + dx * cursorSpeed).coerceIn(0f, sw - 1f)
+        curY = (curY + dy * cursorSpeed).coerceIn(0f, sh - 1f)
+        placeCursor()
+        if (cursorDown && !cursorFlushPending) {
+            cursorFlushPending = true
+            handler.postDelayed(cursorFlush, 8)
+        }
+    }
+
+    private fun updateCursorVisibility() {
+        cursorLayer?.visibility = if (enabledMap && !editing && !lookActive) View.VISIBLE else View.INVISIBLE
     }
 
     private fun hideCursor() {
-        cursorView?.let { try { wm?.removeView(it) } catch (_: Exception) {} }
-        cursorView = null
+        cursorLayer?.let { try { wm?.removeView(it) } catch (_: Exception) {} }
+        cursorLayer = null
+        cursorImg = null
     }
 
     private fun menuItem(t: String, a: () -> Unit): TextView = chip(t, a).apply {
@@ -733,6 +833,12 @@ class OverlayService : Service() {
         }
         col.addView(menuItem("Ukuran logo: ${bubbleSizeDp}dp  (− / +)") { closePanel(); openPanelSizeControls() })
         col.addView(menuItem("Transparansi: ${(bubbleOpacity * 100).toInt()}%  (ubah)") { bubbleOpacity = if (bubbleOpacity >= 0.99f) 0.75f else if (bubbleOpacity >= 0.7f) 0.5f else 1f; Store.prefs(this).edit().putFloat("bubble_opacity", bubbleOpacity).apply(); bubble?.alpha = bubbleOpacity * if (enabledMap) 1f else 0.55f; closePanel() })
+        col.addView(menuItem("Kecepatan kursor: x$cursorSpeed  (ubah)") {
+            cursorSpeed = if (cursorSpeed < 1.4f) 1.5f else if (cursorSpeed < 1.9f) 2f else if (cursorSpeed < 2.9f) 3f else 1f
+            Store.prefs(this).edit().putFloat("cursor_speed", cursorSpeed).apply()
+            Toast.makeText(this, "Kecepatan kursor x$cursorSpeed", Toast.LENGTH_SHORT).show()
+            closePanel()
+        })
         col.addView(menuItem("Edit tombol") { closePanel(); openEditor() })
         col.addView(menuItem("Sembunyikan") { shutdown() })
         try { wm?.addView(col, lp); panel = col } catch (e: Exception) {}
@@ -788,6 +894,7 @@ class OverlayService : Service() {
         private var downY = 0f
         private var lastX = 0f
         private var lastY = 0f
+        private val original: List<Mapping> = maps
         private val modes = listOf("HOLD", "TAP", "REPEAT", "DOUBLE", "RELEASE")
         private val modeLabels = listOf("Hold", "Tap", "Repeat", "Double", "Release")
         private val hint = "Pilih tombol, lalu tahan lingkaran dan geser ke posisi game. Gunakan panah Geser untuk penyesuaian."
@@ -812,7 +919,7 @@ class OverlayService : Service() {
             toolbar.addView(iconChip(R.drawable.ic_add) {
                 addMenu.visibility = if (addMenu.visibility == View.VISIBLE) View.GONE else View.VISIBLE
             })
-            toolbar.addView(iconChip(R.drawable.ic_minus) { closeEditor() })
+            toolbar.addView(iconChip(R.drawable.ic_close) { persist(original); closeEditor() })
             toolbar.addView(iconChip(R.drawable.ic_check) { closeEditor() })
             top.addView(toolbar)
 
@@ -910,7 +1017,7 @@ class OverlayService : Service() {
             panelBox.visibility = View.VISIBLE
             val title = when {
                 sel == JOY -> "Joystick - radius ${m.radius.toInt()}"
-                m.kind == "LOOK" -> "FPS Look - sens ${"%.1f".format(m.sens)} - area ${m.radius.toInt()}"
+                m.kind == "LOOK" -> "FPS Look - tombol: " + (if (m.trig == 0) "tekan tombol keyboard" else keyName(m.trig))
                 m.keyCode == 0 -> "Tombol baru - tekan tombol keyboard"
                 else -> "Tombol ${keyName(m.keyCode)}"
             }
@@ -923,6 +1030,11 @@ class OverlayService : Service() {
             if (m.kind == "TAP") {
                 r1.addView(chip("Mouse Kiri") { assignKey(MOUSE_LEFT) })
                 r1.addView(chip("Mouse Kanan") { assignKey(MOUSE_RIGHT) })
+            }
+            if (m.kind == "LOOK") {
+                r1.addView(chip("Mouse Kanan") { assignKey(MOUSE_RIGHT) })
+                r1.addView(chip("Mouse Tengah") { assignKey(MOUSE_MID) })
+                r1.addView(chip("Kosongkan") { upd { it.copy(trig = 0) } })
             }
             panelBox.addView(r1)
 
@@ -950,6 +1062,25 @@ class OverlayService : Service() {
             }
             panelBox.addView(r2)
 
+            if (m.kind == "TAP") {
+                val rm = row()
+                modes.forEachIndexed { i, md ->
+                    val cc = chip(modeLabels[i]) { upd { it.copy(mode = md) } }
+                    if (m.mode == md) cc.background = rounded(0xFF0F6B4B.toInt(), 10)
+                    rm.addView(cc)
+                }
+                panelBox.addView(rm)
+            } else if (m.kind == "LOOK") {
+                val rm = row()
+                val tg = chip("Toggle (tekan = ON/OFF)") { upd { it.copy(mode = "TOGGLE") } }
+                val th = chip("Tahan (aktif saat ditahan)") { upd { it.copy(mode = "TAHAN") } }
+                if (m.mode == "TAHAN") th.background = rounded(0xFF0F6B4B.toInt(), 10)
+                else tg.background = rounded(0xFF0F6B4B.toInt(), 10)
+                rm.addView(tg)
+                rm.addView(th)
+                panelBox.addView(rm)
+            }
+
             val r3 = row()
             r3.addView(lbl("Geser"))
             r3.addView(iconChip(R.drawable.ic_arrow_left) { nudge(-3f, 0f) })
@@ -976,11 +1107,21 @@ class OverlayService : Service() {
 
         private fun assignKey(code: Int) {
             val m = selMapping()
-            if (m == null || m.kind != "TAP") {
-                Toast.makeText(context, "Tambah/pilih tombol dulu", Toast.LENGTH_SHORT).show()
+            if (m == null || (m.kind != "TAP" && m.kind != "LOOK")) {
+                Toast.makeText(context, "Tambah/pilih tombol atau FPS Look dulu", Toast.LENGTH_SHORT).show()
                 return
             }
-            if (code != m.keyCode && maps.any { it.keyCode == code }) {
+            if (m.kind == "LOOK") {
+                if (maps.any { it.kind != "LOOK" && it.keyCode == code }) {
+                    Toast.makeText(context, "Tombol itu sudah dipakai", Toast.LENGTH_SHORT).show()
+                    return
+                }
+                persist(maps.map { if (it === m) it.copy(trig = code) else it })
+                select(LOOK_KEY)
+                status.text = "Pemicu FPS Look: ${keyName(code)}. Tekan di game untuk kamera ON/OFF."
+                return
+            }
+            if (code != m.keyCode && (maps.any { it.keyCode == code } || maps.any { it.kind == "LOOK" && it.trig == code })) {
                 Toast.makeText(context, "Tombol itu sudah dipakai", Toast.LENGTH_SHORT).show()
                 return
             }
@@ -1032,9 +1173,9 @@ class OverlayService : Service() {
             canvasView.getLocationOnScreen(loc)
             val x = loc[0] + canvasView.width * 0.70f
             val y = loc[1] + canvasView.height * 0.45f
-            persist(maps + Mapping(LOOK_KEY, "LOOK", x, y, canvasView.height * 0.18f, "HOLD", 1f))
+            persist(maps + Mapping(LOOK_KEY, "LOOK", x, y, canvasView.height * 0.18f, "TOGGLE", 1f))
             select(LOOK_KEY)
-            status.text = "FPS Look: geser lingkaran ke area kamera, pilih tombol pemicu, lalu tekan untuk ON/OFF."
+            status.text = "FPS Look: geser lingkaran ke area kamera, lalu tekan tombol keyboard (atau Mouse Kanan/Tengah) sebagai pemicu."
         }
 
         // ----- sentuhan di editor -----

@@ -9,8 +9,8 @@ android {
         applicationId = "com.example.keymapper"
         minSdk = 26
         targetSdk = 34
-        versionCode = 8
-        versionName = "8.0"
+        versionCode = 9
+        versionName = "9.0"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
