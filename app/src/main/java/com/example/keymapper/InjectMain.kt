@@ -23,6 +23,14 @@ object InjectMain {
     @JvmStatic
     fun main(args: Array<String>) {
         var err = ""
+        // Beri aplikasi izin "akses penggunaan" lewat shell supaya logo V bisa muncul/hilang otomatis mengikuti game.
+        if (args.isNotEmpty() && args[0].isNotEmpty()) {
+            Thread {
+                try {
+                    Runtime.getRuntime().exec(arrayOf("/system/bin/cmd", "appops", "set", args[0], "GET_USAGE_STATS", "allow")).waitFor()
+                } catch (e: Throwable) {}
+            }.start()
+        }
         try {
             val sm = Class.forName("android.os.ServiceManager")
             val binder = sm.getMethod("getService", String::class.java).invoke(null, "input") as IBinder

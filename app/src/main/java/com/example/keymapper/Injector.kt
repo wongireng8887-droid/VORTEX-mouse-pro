@@ -22,7 +22,7 @@ object Injector {
     private var lastAuto = 0L
 
     private fun cmdLine(ctx: Context): String =
-        "CLASSPATH=" + ctx.applicationInfo.sourceDir + " exec app_process /system/bin com.example.keymapper.InjectMain"
+        "CLASSPATH=" + ctx.applicationInfo.sourceDir + " exec app_process /system/bin com.example.keymapper.InjectMain " + ctx.packageName
 
     private fun changed() { onChange?.invoke() }
 

@@ -130,21 +130,18 @@ class OverlayService : Service() {
             shutdown()
         } else {
             Store.prefs(this).edit().putBoolean("overlay_enabled", true).apply()
-            showBubble()
-            val ready = Injector.ready
-            Toast.makeText(this, if (ready) "Siap. Tekan tombol keyboard / gerakkan mouse." else "Belum terhubung. Buka aplikasi, pilih cara sambung.",
-                Toast.LENGTH_LONG).show()
+            startWatch()
         }
         return START_NOT_STICKY
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        // Keep the user preference so MainActivity can restore the bubble on next launch.
-        shutdown()
+        // Layanan tetap jalan di latar supaya logo V bisa muncul otomatis saat game dibuka.
         super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {
+        stopWatch()
         hideBubble()
         Store.prefs(this).unregisterOnSharedPreferenceChangeListener(listener)
         instance = null
@@ -152,9 +149,80 @@ class OverlayService : Service() {
     }
 
     private fun shutdown() {
+        stopWatch()
         hideBubble()
         stopForeground(Service.STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    // ---------- muncul/hilang otomatis mengikuti game yang sedang dibuka ----------
+    private val watchHandler = Handler(Looper.getMainLooper())
+    private var watching = false
+    private var fgPkg = ""
+    private var fgTs = 0L
+    private val watchTick = object : Runnable {
+        override fun run() {
+            if (!watching) return
+            try { evaluateForeground() } catch (e: Exception) {}
+            watchHandler.postDelayed(this, 1200)
+        }
+    }
+
+    private fun startWatch() {
+        watching = true
+        watchHandler.removeCallbacks(watchTick)
+        watchHandler.post(watchTick)
+    }
+
+    private fun stopWatch() {
+        watching = false
+        watchHandler.removeCallbacksAndMessages(null)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun hasUsageAccess(): Boolean = try {
+        val ao = getSystemService(Context.APP_OPS_SERVICE) as android.app.AppOpsManager
+        ao.checkOpNoThrow(android.app.AppOpsManager.OPSTR_GET_USAGE_STATS, android.os.Process.myUid(), packageName) ==
+            android.app.AppOpsManager.MODE_ALLOWED
+    } catch (e: Exception) { false }
+
+    private fun readForeground() {
+        val usm = getSystemService(Context.USAGE_STATS_SERVICE) as android.app.usage.UsageStatsManager
+        val now = System.currentTimeMillis()
+        val from = if (fgTs == 0L) now - 24L * 3600_000L else fgTs - 1000L
+        val ev: android.app.usage.UsageEvents? = usm.queryEvents(from, now)
+        if (ev == null) return
+        val e = android.app.usage.UsageEvents.Event()
+        while (ev.hasNextEvent()) {
+            ev.getNextEvent(e)
+            // 1 = ACTIVITY_RESUMED (MOVE_TO_FOREGROUND di Android lama)
+            if (e.eventType == 1 && e.timeStamp >= fgTs) { fgPkg = e.packageName; fgTs = e.timeStamp }
+        }
+    }
+
+    private fun evaluateForeground() {
+        if (!Settings.canDrawOverlays(this)) return
+        if (!hasUsageAccess()) {
+            // belum bisa mendeteksi game: perilaku lama, logo tampil terus
+            if (bubble == null) showForGame()
+            return
+        }
+        readForeground()
+        val inGame = fgPkg.isNotEmpty() && fgPkg in Store.games(this)
+        if (inGame) {
+            if (Store.currentGame(this) != fgPkg) Store.setCurrentGame(this, fgPkg)
+            if (bubble == null) showForGame()
+        } else if (bubble != null) {
+            hideBubble()
+        }
+    }
+
+    private fun showForGame() {
+        if (!enabledMap) setMapping(true)
+        showBubble()
+        if (bubble != null && !Injector.ready) {
+            Toast.makeText(this, "Belum terhubung. Buka aplikasi, pilih cara sambung.", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun startFg() {
@@ -166,6 +234,9 @@ class OverlayService : Service() {
             .setContentTitle("Vortex Mouse Pro aktif")
             .setContentText("Keyboard dan mouse dipetakan ke layar")
             .setContentIntent(pi)
+            .addAction(Notification.Action.Builder(
+                android.graphics.drawable.Icon.createWithResource(this, R.drawable.ic_power), "Matikan",
+                PendingIntent.getService(this, 1, Intent(this, OverlayService::class.java).setAction(ACTION_HIDE), PendingIntent.FLAG_IMMUTABLE)).build())
             .build()
         if (Build.VERSION.SDK_INT >= 34) startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         else startForeground(1, n)
@@ -283,11 +354,25 @@ class OverlayService : Service() {
         val hasLook = maps.any { it.kind == "LOOK" }
         // tanpa marker FPS Look, klik kiri yang sudah dipetakan tetap jadi tombol biasa
         if (leftMapped && !hasLook) return false
-        if (curX < 0f || curY < 0f) return false
+        if (curX < 0f || curY < 0f) {
+            val (sw, sh) = screenSize()
+            curX = sw / 2f; curY = sh / 2f
+            placeCursor()
+        }
+        if (cursorDown) { cursorDown = false; refresh() }   // lepaskan sentuhan kursor yang tersangkut
         leftByCursor = true
         cursorDown = true
+        lastEvt = "Klik kursor " + curX.toInt() + "," + curY.toInt()
+        flashCursor()
         refresh()
         return true
+    }
+
+    private fun flashCursor() {
+        val img = cursorImg ?: return
+        img.animate().scaleX(0.75f).scaleY(0.75f).setDuration(60).withEndAction {
+            img.animate().scaleX(1f).scaleY(1f).setDuration(80).start()
+        }.start()
     }
 
     private fun setLook(on: Boolean, m: Mapping) {
@@ -471,7 +556,7 @@ class OverlayService : Service() {
     }
 
     private fun updateCapture() {
-        val need = bubble != null && enabledMap && !editing && maps.isNotEmpty()
+        val need = bubble != null && enabledMap && !editing
         if (need && capture == null) {
             val v = CaptureView(this)
             val lp = WindowManager.LayoutParams(1, 1, overlayType(),
@@ -978,7 +1063,10 @@ class OverlayService : Service() {
                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP))
                 } catch (_: Exception) {}
             },
-            tile(R.drawable.ic_power, "Sembunyikan") { shutdown() }))
+            tile(R.drawable.ic_power, "Matikan Overlay") {
+                Store.prefs(this).edit().putBoolean("overlay_enabled", false).apply()
+                shutdown()
+            }))
 
         val scroll = android.widget.ScrollView(this)
         scroll.isVerticalScrollBarEnabled = false

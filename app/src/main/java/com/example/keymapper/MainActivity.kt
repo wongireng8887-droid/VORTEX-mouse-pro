@@ -116,7 +116,7 @@ class MainActivity : Activity() {
         super.onResume()
         (getSystemService(Context.INPUT_SERVICE) as InputManager).registerInputDeviceListener(inputListener, null)
         Injector.autoStart(this, null)
-        if (Store.prefs(this).getBoolean("overlay_enabled", false) && OverlayService.instance == null && Settings.canDrawOverlays(this)) {
+        if (Store.prefs(this).getBoolean("overlay_enabled", true) && OverlayService.instance == null && Settings.canDrawOverlays(this)) {
             startForegroundService(Intent(this, OverlayService::class.java).setAction(OverlayService.ACTION_SHOW))
         }
         select(tab)
@@ -618,6 +618,13 @@ class MainActivity : Activity() {
             "Nyalakan Shizuku (debug nirkabel atau root), lalu izinkan aplikasi ini.", listOf(main))
     }
 
+    @Suppress("DEPRECATION")
+    private fun usageAccessOk(): Boolean = try {
+        val ao = getSystemService(Context.APP_OPS_SERVICE) as android.app.AppOpsManager
+        ao.checkOpNoThrow(android.app.AppOpsManager.OPSTR_GET_USAGE_STATS, android.os.Process.myUid(), packageName) ==
+            android.app.AppOpsManager.MODE_ALLOWED
+    } catch (e: Exception) { false }
+
     private fun settingsView(): View {
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), dp(16)) }
         val gap = { LinearLayout.LayoutParams(M, W).apply { topMargin = dp(10) } }
@@ -650,28 +657,24 @@ class MainActivity : Activity() {
         ov.addView(pill(if (overlayOk) "Aktif" else "Izinkan", GREEN) { openOverlaySettings() })
         col.addView(ov, gap())
 
-        val sw = Switch(this).apply {
-            isChecked = OverlayService.instance?.isBubbleShown() == true
-            setOnCheckedChangeListener { _, checked ->
-                if (checked) {
-                    if (!Settings.canDrawOverlays(this@MainActivity)) { toast("Izinkan tampil di atas aplikasi lain dulu"); isChecked = false }
-                    else { Store.prefs(this@MainActivity).edit().putBoolean("overlay_enabled", true).apply(); startForegroundService(Intent(this@MainActivity, OverlayService::class.java).setAction(OverlayService.ACTION_SHOW)) }
-                } else {
-                    startService(Intent(this@MainActivity, OverlayService::class.java).setAction(OverlayService.ACTION_HIDE))
-                }
-            }
-        }
-        val bb = LinearLayout(this).apply {
+        val usageOk = usageAccessOk()
+        val ua = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
             background = rounded(CARD, 14); setPadding(dp(16), dp(10), dp(16), dp(10))
         }
-        val bt = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        bt.addView(label("Bubble melayang", 14f, Color.WHITE, true))
-        bt.addView(label("Tombol V di atas layar: ON/OFF mapping dan edit tombol.", 12f, MUTED, false))
-        bb.addView(bt, LinearLayout.LayoutParams(0, W, 1f)); bb.addView(sw)
-        col.addView(bb, gap())
+        val uaT = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        uaT.addView(label("Muncul otomatis di game", 14f, Color.WHITE, true).also {
+            it.setIcon(if (usageOk) R.drawable.ic_check else R.drawable.ic_warning, if (usageOk) MINT else AMBER, 18)
+        })
+        uaT.addView(label(if (usageOk) "Logo V muncul saat game dibuka dan hilang saat keluar dari game."
+            else "Aktif sendiri setelah tersambung (Shizuku / debug nirkabel). Atau izinkan manual di sini.", 12f, MUTED, false))
+        ua.addView(uaT, LinearLayout.LayoutParams(0, W, 1f))
+        ua.addView(pill(if (usageOk) "Aktif" else "Izinkan", GREEN) {
+            try { startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) } catch (e: Exception) { toast("Tidak bisa membuka pengaturan") }
+        })
+        col.addView(ua, gap())
 
-        col.addView(label("Tips: F8 di keyboard mematikan mapping. Untuk menyalakan lagi, tap bubble V.", 12f, MUTED, false)
+        col.addView(label("Tips: F8 di keyboard mematikan mapping. Untuk menyalakan lagi, tap logo V lalu pilih Mapping.", 12f, MUTED, false)
             .apply { setPadding(0, dp(10), 0, 0) })
         return ScrollView(this).apply { addView(col) }
     }
