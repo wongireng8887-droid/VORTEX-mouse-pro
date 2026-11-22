@@ -567,32 +567,19 @@ class OverlayService : Service() {
             return
         }
         showHud()
-        val v = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            setPadding(dp(5), dp(5), dp(5), dp(5))
-            background = rounded(0xE6101922.toInt(), 18).apply {
-                setStroke(dp(1), 0xFF36D9F4.toInt())
-            }
-            val appIcon = ImageView(this@OverlayService).apply {
-                setImageResource(R.drawable.vortex_app_icon)
-                scaleType = ImageView.ScaleType.CENTER_CROP
-                background = rounded(0xFF17232D.toInt(), 12)
-                clipToOutline = true
-                layoutParams = LinearLayout.LayoutParams(dp(42), dp(42)).apply { rightMargin = dp(5) }
-            }
+        // Satu ikon floating saja: logo mouse PNG transparan tanpa kotak/background.
+        val v = FrameLayout(this).apply {
+            setBackgroundColor(Color.TRANSPARENT)
             val mouseIcon = ImageView(this@OverlayService).apply {
                 setImageResource(R.drawable.vortex_mouse_logo)
                 scaleType = ImageView.ScaleType.FIT_CENTER
-                background = rounded(0xFF101820.toInt(), 12)
-                clipToOutline = true
-                layoutParams = LinearLayout.LayoutParams(dp(42), dp(42))
+                setBackgroundColor(Color.TRANSPARENT)
+                layoutParams = FrameLayout.LayoutParams(dp(56), dp(56), Gravity.CENTER)
             }
-            addView(appIcon)
             addView(mouseIcon)
             alpha = if (enabledMap) 1f else 0.55f
         }
-        val lp = WindowManager.LayoutParams(dp(104), dp(52), overlayType(),
+        val lp = WindowManager.LayoutParams(dp(60), dp(60), overlayType(),
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT).apply {
             gravity = Gravity.TOP or Gravity.START; x = bubbleX; y = bubbleY
@@ -611,16 +598,7 @@ class OverlayService : Service() {
                         }
                     }
                     MotionEvent.ACTION_UP -> if (!moved) {
-                        if (e.x < view.width / 2f) {
-                            closePanel()
-                            try {
-                                startActivity(Intent(this@OverlayService, MainActivity::class.java).apply {
-                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                                })
-                            } catch (_: Exception) { }
-                        } else {
-                            if (panel == null) openPanel() else closePanel()
-                        }
+                        if (panel == null) openPanel() else closePanel()
                     }
                 }
                 return true
