@@ -289,6 +289,12 @@ class OverlayService : Service() {
             pressed.remove(code)
             for (m in ms) if (m.kind == "TAP" && m.mode == "RELEASE") pulse(code, 1)
         }
+        // Saat tembak/tombol lain ditekan sambil look, flush gerak kamera dulu
+        // supaya MOVE look tidak tertinggal di belakang event DOWN tombol.
+        if (lookActive && lookFlushPending) {
+            handler.removeCallbacks(lookFlush)
+            lookFlush.run()
+        }
         refresh()
         return true
     }
@@ -329,13 +335,13 @@ class OverlayService : Service() {
         lastEvt = "Mouse gerak"
         // Accumulate deltas and flush on a short interval. Injecting every raw
         // mouse event while other keys are held floods the Shizuku/ADB pipe and
-        // produces the choppy "patah-patah" feel. 6ms ≈ 166 Hz is still smooth
-        // for camera look while cutting injection traffic dramatically.
+        // produces the choppy "patah-patah" feel. 4ms ≈ 250 Hz keeps look tight
+        // even while holding fire (mouse left) or movement keys.
         pendingLookDx += dx
         pendingLookDy += dy
         if (!lookFlushPending) {
             lookFlushPending = true
-            handler.postDelayed(lookFlush, 6)
+            handler.postDelayed(lookFlush, 4)
         }
     }
 
@@ -347,7 +353,7 @@ class OverlayService : Service() {
         // Recenter internal virtual finger automatically. This is deliberately
         // not user-configurable: the FPS Look settings expose only X/Y sensitivity.
         val (screenW, screenH) = screenSize()
-        val autoRebaseDistance = (minOf(screenW, screenH) * 0.38f).coerceAtLeast(260f)
+        val autoRebaseDistance = (minOf(screenW, screenH) * 0.45f).coerceAtLeast(300f)
         if (hypot(lookX - m.x, lookY - m.y) >= autoRebaseDistance) {
             // Jangan toggle lookActive: itu membuat touch UP/DOWN berulang dari
             // jalur UI dan dapat menyebabkan drag terasa putus atau tersangkut.
@@ -579,8 +585,19 @@ class OverlayService : Service() {
             isFocusableInTouchMode = true
             setOnCapturedPointerListener { _, e ->
                 onMouseButtons(e.buttonState)
-                if (e.actionMasked == MotionEvent.ACTION_MOVE || e.actionMasked == MotionEvent.ACTION_HOVER_MOVE) {
-                    if (lookActive) onMouseMove(e.x, e.y) else moveCursorBy(e.x, e.y)
+                // Pointer-capture reports relative deltas via getX/getY. Some devices
+                // also expose AXIS_RELATIVE_X/Y — use those when non-zero so look
+                // keeps moving while a mouse button (e.g. fire) is held.
+                val relX = e.getAxisValue(MotionEvent.AXIS_RELATIVE_X)
+                val relY = e.getAxisValue(MotionEvent.AXIS_RELATIVE_Y)
+                val dx = if (relX != 0f || relY != 0f) relX else e.x
+                val dy = if (relX != 0f || relY != 0f) relY else e.y
+                val moveLike = e.actionMasked == MotionEvent.ACTION_MOVE ||
+                    e.actionMasked == MotionEvent.ACTION_HOVER_MOVE ||
+                    e.actionMasked == MotionEvent.ACTION_BUTTON_PRESS ||
+                    e.actionMasked == MotionEvent.ACTION_BUTTON_RELEASE
+                if (moveLike && (dx != 0f || dy != 0f)) {
+                    if (lookActive) onMouseMove(dx, dy) else moveCursorBy(dx, dy)
                 }
                 true
             }

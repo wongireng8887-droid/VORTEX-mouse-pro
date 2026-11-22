@@ -25,6 +25,64 @@ object Injector {
     private val touchQueue = ArrayDeque<TouchCommand>()
     private var drainingQueue = false
     private var lastAuto = 0L
+    // Single long-lived worker so we never thrash threads under high mouse+key load.
+    private val workerLock = Any()
+    private var worker: Thread? = null
+    private fun ensureWorker() {
+        synchronized(workerLock) {
+            val existing = worker
+            if (existing != null && existing.isAlive) return
+            val t = Thread({
+                while (true) {
+                    val command = synchronized(queueLock) {
+                        if (touchQueue.isEmpty()) {
+                            drainingQueue = false
+                            null
+                        } else touchQueue.removeFirst()
+                    } ?: break
+                    val output = conn?.output
+                    if (output == null || !ready) {
+                        synchronized(queueLock) {
+                            touchQueue.clear()
+                            drainingQueue = false
+                        }
+                        break
+                    }
+                    val line = when (command.action) {
+                        0 -> "D ${command.id} ${command.x} ${command.y}"
+                        1 -> "M ${command.id} ${command.x} ${command.y}"
+                        2 -> "U ${command.id}"
+                        else -> "R"
+                    } + "\n"
+                    val wrote = try {
+                        synchronized(lock) {
+                            val current = conn?.output
+                            if (current == null || !ready) false
+                            else {
+                                current.write(line.toByteArray())
+                                current.flush()
+                                true
+                            }
+                        }
+                    } catch (e: Exception) {
+                        ready = false
+                        changed()
+                        false
+                    }
+                    if (!wrote) {
+                        synchronized(queueLock) {
+                            touchQueue.clear()
+                            drainingQueue = false
+                        }
+                        break
+                    }
+                }
+            }, "VortexTouchQueue")
+            t.isDaemon = true
+            worker = t
+            t.start()
+        }
+    }
 
     private fun cmdLine(ctx: Context): String =
         "CLASSPATH=" + ctx.applicationInfo.sourceDir + " exec app_process /system/bin com.example.keymapper.InjectMain " + ctx.packageName
@@ -104,74 +162,24 @@ object Injector {
         synchronized(queueLock) {
             val command = TouchCommand(action, id, x, y)
             if (action == 1) {
-                // Collapse queued MOVE updates for this pointer even when other
-                // pointers' MOVE commands are interleaved. Never cross a DOWN/UP
-                // boundary for the same pointer.
+                // Drop ALL queued MOVE updates for this pointer after the last
+                // DOWN/UP barrier (not just one). Keeps only the latest position
+                // so look stays smooth while other fingers (fire, etc.) are held.
                 val pending = touchQueue.toList()
                 val barrier = pending.indexOfLast { it.id == id && it.action != 1 }
-                val oldMove = pending.indexOfLast { it.id == id && it.action == 1 }
-                if (oldMove > barrier) {
-                    val compacted = pending.toMutableList().apply { removeAt(oldMove) }
-                    touchQueue.clear()
-                    touchQueue.addAll(compacted)
+                val compacted = pending.filterIndexed { index, cmd ->
+                    !(cmd.id == id && cmd.action == 1 && index > barrier)
                 }
+                touchQueue.clear()
+                touchQueue.addAll(compacted)
             }
             touchQueue.addLast(command)
             if (!drainingQueue) {
                 drainingQueue = true
-                Thread({ drainTouchQueue() }, "VortexTouchQueue").apply { isDaemon = true; start() }
+                ensureWorker()
             }
         }
         return true
-    }
-
-    private fun drainTouchQueue() {
-        while (true) {
-            val command = synchronized(queueLock) {
-                if (touchQueue.isEmpty()) {
-                    drainingQueue = false
-                    null
-                } else touchQueue.removeFirst()
-            } ?: return
-
-            val output = conn?.output
-            if (output == null || !ready) {
-                synchronized(queueLock) {
-                    touchQueue.clear()
-                    drainingQueue = false
-                }
-                return
-            }
-            val line = when (command.action) {
-                0 -> "D ${command.id} ${command.x} ${command.y}"
-                1 -> "M ${command.id} ${command.x} ${command.y}"
-                2 -> "U ${command.id}"
-                else -> "R"
-            } + "\n"
-            val wrote = try {
-                synchronized(lock) {
-                    val current = conn?.output
-                    if (current == null || !ready) {
-                        false
-                    } else {
-                        current.write(line.toByteArray())
-                        current.flush()
-                        true
-                    }
-                }
-            } catch (e: Exception) {
-                ready = false
-                changed()
-                false
-            }
-            if (!wrote) {
-                synchronized(queueLock) {
-                    touchQueue.clear()
-                    drainingQueue = false
-                }
-                return
-            }
-        }
     }
 
     fun releaseAll() {
@@ -182,7 +190,7 @@ object Injector {
             touchQueue.addLast(TouchCommand(3, 0))
             if (!drainingQueue) {
                 drainingQueue = true
-                Thread({ drainTouchQueue() }, "VortexTouchQueue").apply { isDaemon = true; start() }
+                ensureWorker()
             }
         }
     }
