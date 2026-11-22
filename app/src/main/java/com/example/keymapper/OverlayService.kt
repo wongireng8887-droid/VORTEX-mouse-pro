@@ -67,8 +67,6 @@ class OverlayService : Service() {
     private var lookY = 0f
     private var accX = 0f
     private var accY = 0f
-    // Minta Injector melakukan recenter otomatis saat jarak virtual finger terlalu jauh.
-    private var lookRebasePending = false
     private var prevButtons = 0
 
     // sentuhan lewat Shizuku
@@ -323,17 +321,8 @@ class OverlayService : Service() {
         if (!lookActive) return
         lookX += dx * m.sens
         lookY += dy * m.sensY
-        // Recenter internal virtual finger automatically. This is deliberately
-        // not user-configurable: the FPS Look settings expose only X/Y sensitivity.
-        val (screenW, screenH) = screenSize()
-        val autoRebaseDistance = (minOf(screenW, screenH) * 0.38f).coerceAtLeast(260f)
-        if (hypot(lookX - m.x, lookY - m.y) >= autoRebaseDistance) {
-            // Jangan toggle lookActive: itu membuat touch UP/DOWN berulang dari
-            // jalur UI dan dapat menyebabkan drag terasa putus atau tersangkut.
-            lookX = m.x
-            lookY = m.y
-            lookRebasePending = true
-        }
+        // Keep one continuous virtual touch for the whole FPS Look gesture.
+        // Periodic UP/DOWN recentering interrupts the game's drag tracking.
         refresh()
     }
 
@@ -389,7 +378,6 @@ class OverlayService : Service() {
     private fun setLook(on: Boolean, m: Mapping) {
         if (on == lookActive) return
         accX = 0f; accY = 0f
-        lookRebasePending = false
         if (on) { lookActive = true; lookX = m.x; lookY = m.y } else lookActive = false
         updateCursorVisibility()
         refresh()
@@ -400,7 +388,7 @@ class OverlayService : Service() {
         if (!on) {
             pressed.clear(); pulsing.clear(); repeaters.clear()
             handler.removeCallbacksAndMessages(null)
-            lookActive = false; accX = 0f; accY = 0f; lookRebasePending = false
+            lookActive = false; accX = 0f; accY = 0f
             cursorDown = false; leftByCursor = false; cursorFlushPending = false
             refresh()
         }
@@ -452,13 +440,6 @@ class OverlayService : Service() {
     }
 
     private fun applyShizuku() {
-        // Saat batas radius tercapai, lakukan UP lalu DOWN baru pada titik tengah.
-        // Ini me-reset virtual finger secara eksplisit tanpa mematikan mode LOOK.
-        if (lookRebasePending) {
-            val cur = live.remove("look")
-            if (cur != null) Injector.touch(2, cur.first, cur.second.x, cur.second.y)
-            lookRebasePending = false
-        }
         val gone = live.keys.filter { it !in desired }
         for (id in gone) {
             val cur = live[id] ?: continue
@@ -575,8 +556,7 @@ class OverlayService : Service() {
                 // Android may omit a final key/button UP when pointer capture loses
                 // focus. Clear held states and release all virtual touches together.
                 lookActive = false
-                lookRebasePending = false
-                prevButtons = 0
+                        prevButtons = 0
                 cursorDown = false
                 leftByCursor = false
                 pressed.clear()
@@ -600,7 +580,7 @@ class OverlayService : Service() {
         } else if (!need && capture != null) {
             capture?.let { try { wm?.removeView(it) } catch (e: Exception) {} }
             capture = null
-            if (lookActive) { lookActive = false; lookRebasePending = false; refresh() }
+            if (lookActive) { lookActive = false; refresh() }
             if (cursorDown) { cursorDown = false; leftByCursor = false; refresh() }
             hideCursor()
             prevButtons = 0
