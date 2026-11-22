@@ -4,20 +4,19 @@ plugins {
 }
 android {
     namespace = "com.example.keymapper"
-    compileSdk = 36
+    compileSdk = 34
     defaultConfig {
         applicationId = "com.example.keymapper"
         minSdk = 26
-        targetSdk = 36
-        versionCode = 13
-        versionName = "9.4-android16-arm64"
+        targetSdk = 34
+        versionCode = 12
+        versionName = "9.3"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    ndk { abiFilters += setOf("arm64-v8a", "x86_64") }
     packaging { resources { excludes += setOf("META-INF/versions/9/OSGI-INF/MANIFEST.MF", "META-INF/DEPENDENCIES", "META-INF/LICENSE*", "META-INF/NOTICE*") } }
 }
 dependencies {

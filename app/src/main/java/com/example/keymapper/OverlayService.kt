@@ -65,9 +65,24 @@ class OverlayService : Service() {
     private var lookActive = false
     private var lookX = 0f
     private var lookY = 0f
-    private var accX = 0f
-    private var accY = 0f
+    // Minta Injector melakukan recenter otomatis saat jarak virtual finger terlalu jauh.
+    private var lookRebasePending = false
     private var prevButtons = 0
+    // Coalesce mouse-look deltas so high-rate input + simultaneous key presses
+    // don't flood the injection pipe and cause stutter ("patah-patah").
+    private var pendingLookDx = 0f
+    private var pendingLookDy = 0f
+    private var lookFlushPending = false
+    private val lookFlush = Runnable {
+        lookFlushPending = false
+        if (lookActive && (pendingLookDx != 0f || pendingLookDy != 0f)) {
+            val dx = pendingLookDx
+            val dy = pendingLookDy
+            pendingLookDx = 0f
+            pendingLookDy = 0f
+            applyLook(dx, dy)
+        }
+    }
 
     // sentuhan lewat Shizuku
     private var desired: Map<String, Pair<PointF, PointF>> = emptyMap()
@@ -310,10 +325,18 @@ class OverlayService : Service() {
 
     private fun onMouseMove(dx: Float, dy: Float) {
         if (!enabledMap || editing || !lookActive) return
+        if (dx == 0f && dy == 0f) return
         lastEvt = "Mouse gerak"
-        // Pointer-capture sudah mengirim delta relatif. Proses langsung agar tidak
-        // menambah antrean timer di main thread yang terasa seperti input tertinggal.
-        if (dx != 0f || dy != 0f) applyLook(dx, dy)
+        // Accumulate deltas and flush on a short interval. Injecting every raw
+        // mouse event while other keys are held floods the Shizuku/ADB pipe and
+        // produces the choppy "patah-patah" feel. 6ms ≈ 166 Hz is still smooth
+        // for camera look while cutting injection traffic dramatically.
+        pendingLookDx += dx
+        pendingLookDy += dy
+        if (!lookFlushPending) {
+            lookFlushPending = true
+            handler.postDelayed(lookFlush, 6)
+        }
     }
 
     private fun applyLook(dx: Float, dy: Float) {
@@ -321,8 +344,17 @@ class OverlayService : Service() {
         if (!lookActive) return
         lookX += dx * m.sens
         lookY += dy * m.sensY
-        // Keep one continuous virtual touch for the whole FPS Look gesture.
-        // Periodic UP/DOWN recentering interrupts the game's drag tracking.
+        // Recenter internal virtual finger automatically. This is deliberately
+        // not user-configurable: the FPS Look settings expose only X/Y sensitivity.
+        val (screenW, screenH) = screenSize()
+        val autoRebaseDistance = (minOf(screenW, screenH) * 0.38f).coerceAtLeast(260f)
+        if (hypot(lookX - m.x, lookY - m.y) >= autoRebaseDistance) {
+            // Jangan toggle lookActive: itu membuat touch UP/DOWN berulang dari
+            // jalur UI dan dapat menyebabkan drag terasa putus atau tersangkut.
+            lookX = m.x
+            lookY = m.y
+            lookRebasePending = true
+        }
         refresh()
     }
 
@@ -377,7 +409,12 @@ class OverlayService : Service() {
 
     private fun setLook(on: Boolean, m: Mapping) {
         if (on == lookActive) return
-        accX = 0f; accY = 0f
+        // Flush / discard any pending look motion when toggling.
+        handler.removeCallbacks(lookFlush)
+        lookFlushPending = false
+        pendingLookDx = 0f
+        pendingLookDy = 0f
+        lookRebasePending = false
         if (on) { lookActive = true; lookX = m.x; lookY = m.y } else lookActive = false
         updateCursorVisibility()
         refresh()
@@ -388,7 +425,11 @@ class OverlayService : Service() {
         if (!on) {
             pressed.clear(); pulsing.clear(); repeaters.clear()
             handler.removeCallbacksAndMessages(null)
-            lookActive = false; accX = 0f; accY = 0f
+            lookActive = false
+            lookRebasePending = false
+            lookFlushPending = false
+            pendingLookDx = 0f
+            pendingLookDy = 0f
             cursorDown = false; leftByCursor = false; cursorFlushPending = false
             refresh()
         }
@@ -440,6 +481,13 @@ class OverlayService : Service() {
     }
 
     private fun applyShizuku() {
+        // Saat batas radius tercapai, lakukan UP lalu DOWN baru pada titik tengah.
+        // Ini me-reset virtual finger secara eksplisit tanpa mematikan mode LOOK.
+        if (lookRebasePending) {
+            val cur = live.remove("look")
+            if (cur != null) Injector.touch(2, cur.first, cur.second.x, cur.second.y)
+            lookRebasePending = false
+        }
         val gone = live.keys.filter { it !in desired }
         for (id in gone) {
             val cur = live[id] ?: continue
@@ -555,8 +603,13 @@ class OverlayService : Service() {
                 hideCursor()
                 // Android may omit a final key/button UP when pointer capture loses
                 // focus. Clear held states and release all virtual touches together.
+                handler.removeCallbacks(lookFlush)
+                lookFlushPending = false
+                pendingLookDx = 0f
+                pendingLookDy = 0f
                 lookActive = false
-                        prevButtons = 0
+                lookRebasePending = false
+                prevButtons = 0
                 cursorDown = false
                 leftByCursor = false
                 pressed.clear()
@@ -580,7 +633,15 @@ class OverlayService : Service() {
         } else if (!need && capture != null) {
             capture?.let { try { wm?.removeView(it) } catch (e: Exception) {} }
             capture = null
-            if (lookActive) { lookActive = false; refresh() }
+            if (lookActive) {
+                handler.removeCallbacks(lookFlush)
+                lookFlushPending = false
+                pendingLookDx = 0f
+                pendingLookDy = 0f
+                lookActive = false
+                lookRebasePending = false
+                refresh()
+            }
             if (cursorDown) { cursorDown = false; leftByCursor = false; refresh() }
             hideCursor()
             prevButtons = 0
