@@ -480,6 +480,13 @@ class OverlayService : Service() {
                     if (on && !byLook) t["k${m.keyCode}"] = PointF(m.x, m.y) to PointF(m.x, m.y)
                 }
                 "LOOK" -> {}
+                else -> {
+                    // joystick (analog) WASD: arah dari tombol yang sedang ditekan
+                    if (m.keyCode in pressed) {
+                        joy = m
+                        when (m.kind) { "UP" -> jy -= 1f; "DOWN" -> jy += 1f; "LEFT" -> jx -= 1f; "RIGHT" -> jx += 1f }
+                    }
+                }
             }
         }
         joy?.let {
