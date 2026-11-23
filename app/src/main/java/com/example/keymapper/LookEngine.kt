@@ -165,11 +165,15 @@ class LookEngine(
     }
 
     private fun recenterLocked() {
-        // Rebase tanpa jeda buatan: urutan UP -> DOWN masuk ke antrean injector
-        // secara berurutan. Ini menghindari jendela 10 ms ketika tidak ada jari aktif.
-        liftLocked()
+        // Handoff overlap: pasang jari baru SEBELUM melepas jari lama.
+        // Dengan begitu game tidak menerima keadaan tanpa jari aktif di antara recenter.
+        // Kedua perintah tetap berurutan di antrean Injector.
+        val oldSlot = slot
+        val oldX = fx
+        val oldY = fy
+        if (!downLocked()) return
+        Injector.touch(2, oldSlot, oldX, oldY)
         recenters++
-        downLocked()
     }
 
     private fun liftLocked() {
