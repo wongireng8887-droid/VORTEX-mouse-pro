@@ -106,7 +106,7 @@ class OverlayService : Service() {
     private val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
         maps = Store.load(this)
         syncLook()
-        hud?.invalidate()
+        invalidateHud()
         updateCapture()
     }
 
@@ -301,10 +301,11 @@ class OverlayService : Service() {
         }
         if (code == MOUSE_LEFT && lookEngine.ownsFire() && ms.any { it.kind == "TAP" && it.mode == "HOLD" }) {
             lastEvt = "Tembak " + (if (down) "tekan" else "lepas")
-            if (repeat == 0) { lookEngine.fire(down); hud?.invalidate() }
+            if (repeat == 0) { lookEngine.fire(down); invalidateHud() }
             return true
         }
         if (ms.isEmpty()) return false
+        if (down && repeat > 0) return true      // auto-repeat saat tombol ditahan: tidak ada perubahan
         lastEvt = keyName(code) + (if (down) " tekan" else " lepas")
         if (down) {
             if (repeat == 0) {
@@ -455,6 +456,7 @@ class OverlayService : Service() {
         if (!on) {
             pressed.clear(); pulsing.clear(); repeaters.clear()
             handler.removeCallbacksAndMessages(null)
+            hudDirty = false
             lookEngine.reset(); lookActive = false
             cursorDown = false; leftByCursor = false; cursorFlushPending = false
             refresh()
@@ -495,7 +497,7 @@ class OverlayService : Service() {
         }
         if (cursorDown && curX >= 0f) t["cur"] = PointF(curX, curY) to PointF(curX, curY)
         desired = t
-        hud?.invalidate()
+        invalidateHud()
         if (t.isNotEmpty() && !Injector.ready) {
             Injector.autoStart(this, null)
             val now = System.currentTimeMillis()
@@ -541,7 +543,7 @@ class OverlayService : Service() {
     private fun persist(list: List<Mapping>) {
         Store.save(this, list); maps = list
         syncLook()
-        hud?.invalidate()
+        invalidateHud()
         updateCapture()
     }
 
@@ -790,12 +792,23 @@ class OverlayService : Service() {
         v.alpha = 0.55f
         val lp = WindowManager.LayoutParams(MP, MP, overlayType(),
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
             PixelFormat.TRANSLUCENT)
         if (Build.VERSION.SDK_INT >= 28) {
             lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         }
+        hudDirty = false
         try { wm?.addView(v, lp); hud = v; applyHudVisibility() } catch (e: Exception) {}
+    }
+
+    // Gambar ulang HUD digabung: banyak perubahan dalam 33 ms = satu kali gambar.
+    private var hudDirty = false
+    private val hudTick = Runnable { hudDirty = false; hud?.invalidate() }
+    private fun invalidateHud() {
+        if (hudDirty) return
+        hudDirty = true
+        handler.postDelayed(hudTick, 33)
     }
 
     private fun hideHud() {
