@@ -551,35 +551,65 @@ class OverlayService : Service() {
 
     // ---------- tangkap keyboard & mouse (jendela fokus kecil) ----------
     private inner class CaptureView(c: Context) : View(c) {
+        // Fallback baseline untuk perangkat yang tidak mengirim AXIS_RELATIVE_X/Y.
+        // getX/getY adalah koordinat posisi; jangan dijumlahkan sebagai delta.
+        private var lastAbsX = Float.NaN
+        private var lastAbsY = Float.NaN
+
+        private fun absoluteDeltaX(e: MotionEvent): Float {
+            var total = 0f
+            var previous = lastAbsX
+            for (i in 0 until e.historySize) {
+                val sample = e.getHistoricalX(i)
+                if (!previous.isNaN()) total += sample - previous
+                previous = sample
+            }
+            val current = e.x
+            if (!previous.isNaN()) total += current - previous
+            lastAbsX = current
+            return total
+        }
+
+        private fun absoluteDeltaY(e: MotionEvent): Float {
+            var total = 0f
+            var previous = lastAbsY
+            for (i in 0 until e.historySize) {
+                val sample = e.getHistoricalY(i)
+                if (!previous.isNaN()) total += sample - previous
+                previous = sample
+            }
+            val current = e.y
+            if (!previous.isNaN()) total += current - previous
+            lastAbsY = current
+            return total
+        }
+
         init {
             isFocusable = true
             isFocusableInTouchMode = true
             setOnCapturedPointerListener { _, e ->
                 onMouseButtons(e.buttonState)
-                // Pointer-capture memberi pergeseran relatif lewat getX/getY. Sistem MENGELOMPOKKAN banyak
-                // sampel mouse dalam satu event (history) per frame. Hanya membaca sampel terakhir membuat
-                // gerakan hilang (terasa lag / kadang tidak mau drag, apalagi saat game berat sambil menembak).
-                // Maka semua sampel dijumlahkan. Event tombol (PRESS/RELEASE) tidak dihitung agar tidak ganda.
                 val act = e.actionMasked
                 if (act == MotionEvent.ACTION_MOVE || act == MotionEvent.ACTION_HOVER_MOVE) {
-                    var dx = e.x
-                    var dy = e.y
+                    // Relative axes benar-benar berisi delta per sampel. Historical relative axes
+                    // harus dijumlahkan bersama current axis; getX/getY bukan delta.
+                    var dx = e.getAxisValue(MotionEvent.AXIS_RELATIVE_X)
+                    var dy = e.getAxisValue(MotionEvent.AXIS_RELATIVE_Y)
                     for (i in 0 until e.historySize) {
-                        dx += e.getHistoricalX(i)
-                        dy += e.getHistoricalY(i)
+                        dx += e.getHistoricalAxisValue(MotionEvent.AXIS_RELATIVE_X, i)
+                        dy += e.getHistoricalAxisValue(MotionEvent.AXIS_RELATIVE_Y, i)
                     }
-                    if (dx == 0f && dy == 0f) {
-                        // sebagian perangkat hanya mengisi sumbu relatif
-                        dx = e.getAxisValue(MotionEvent.AXIS_RELATIVE_X)
-                        dy = e.getAxisValue(MotionEvent.AXIS_RELATIVE_Y)
-                        for (i in 0 until e.historySize) {
-                            dx += e.getHistoricalAxisValue(MotionEvent.AXIS_RELATIVE_X, i)
-                            dy += e.getHistoricalAxisValue(MotionEvent.AXIS_RELATIVE_Y, i)
-                        }
-                    }
+
+                    // Selalu perbarui baseline absolut agar fallback tidak loncat ketika dipakai.
+                    if (dx == 0f) dx = absoluteDeltaX(e) else lastAbsX = e.x
+                    if (dy == 0f) dy = absoluteDeltaY(e) else lastAbsY = e.y
+
                     if (dx != 0f || dy != 0f) {
                         if (lookActive) onMouseMove(dx, dy) else moveCursorBy(dx, dy)
                     }
+                } else if (act == MotionEvent.ACTION_CANCEL) {
+                    lastAbsX = Float.NaN
+                    lastAbsY = Float.NaN
                 }
                 true
             }
@@ -599,6 +629,8 @@ class OverlayService : Service() {
             if (hasWindowFocus) {
                 requestPointerCapture(); showCursor()
             } else {
+                lastAbsX = Float.NaN
+                lastAbsY = Float.NaN
                 hideCursor()
                 // Android may omit a final key/button UP when pointer capture loses
                 // focus. Clear held states and release all virtual touches together.
