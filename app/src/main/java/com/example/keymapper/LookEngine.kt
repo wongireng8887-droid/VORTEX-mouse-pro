@@ -1,10 +1,8 @@
 package com.example.keymapper
 
 import android.os.Process
-import android.os.SystemClock
 import java.util.concurrent.locks.LockSupport
 import kotlin.math.abs
-import kotlin.math.hypot
 
 /**
  * Mesin FPS Look (dibuat ulang).
@@ -40,8 +38,6 @@ class LookEngine(
     private var slot = SLOT_B
     private var fx = 0f
     private var fy = 0f
-    private var gapUntil = 0L
-    private var lastMoveAt = 0L
     private var sw = 0
     private var sh = 0
     private var margin = 24f
@@ -61,8 +57,6 @@ class LookEngine(
             pendX = 0f
             pendY = 0f
             down = false
-            gapUntil = 0L
-            lastMoveAt = SystemClock.uptimeMillis()
             recenters = 0
             active = true
             if (thread?.isAlive != true) {
@@ -118,7 +112,7 @@ class LookEngine(
                 continue
             }
             try {
-                synchronized(lock) { tickLocked(SystemClock.uptimeMillis()) }
+                synchronized(lock) { tickLocked() }
             } catch (e: Throwable) {
                 // satu tick gagal tidak boleh mematikan mesin
             }
@@ -126,8 +120,8 @@ class LookEngine(
         }
     }
 
-    private fun tickLocked(now: Long) {
-        if (!active || now < gapUntil) return
+    private fun tickLocked() {
+        if (!active) return
 
         var ex = pendX * SMOOTH
         var ey = pendY * SMOOTH
@@ -137,10 +131,8 @@ class LookEngine(
         pendY -= ey
 
         if (ex == 0f && ey == 0f) {
-            idleCheckLocked(now)
             return
         }
-        lastMoveAt = now
 
         if (!down && !downLocked()) {
             // belum tersambung: simpan gerakan, coba lagi tick berikutnya
@@ -166,22 +158,18 @@ class LookEngine(
             fx = nx
             fy = ny
             Injector.touch(1, slot, fx, fy)
-            recenterLocked(now)
+            recenterLocked()
             return
         }
         Injector.touch(1, slot, fx, fy)
     }
 
-    private fun idleCheckLocked(now: Long) {
-        if (!down || now - lastMoveAt < IDLE_MS) return
-        val reach = (minOf(sw, sh) * 0.45f).coerceAtLeast(300f)
-        if (hypot(fx - mx, fy - my) > reach * 0.3f) recenterLocked(now)
-    }
-
-    private fun recenterLocked(now: Long) {
+    private fun recenterLocked() {
+        // Rebase tanpa jeda buatan: urutan UP -> DOWN masuk ke antrean injector
+        // secara berurutan. Ini menghindari jendela 10 ms ketika tidak ada jari aktif.
         liftLocked()
         recenters++
-        gapUntil = now + GAP_MS
+        downLocked()
     }
 
     private fun liftLocked() {
@@ -205,9 +193,7 @@ class LookEngine(
         const val SLOT_A = 20
         const val SLOT_B = 21
         const val TICK_NS = 4_000_000L      // 4 ms
-        const val SMOOTH = 0.5f             // bagian sisa gerakan yang dikirim per tick
-        const val GAP_MS = 10L              // jeda antara angkat dan pasang jari baru
-        const val IDLE_MS = 150L            // mouse diam selama ini -> boleh ganti jari
+        const val SMOOTH = 1.0f             // kirim seluruh delta; tidak menahan setengah gerakan
         const val MAX_PEND = 3000f
     }
 }
