@@ -61,46 +61,10 @@ class OverlayService : Service() {
     private var lastEvt = "-"
     private var lastWarn = 0L
 
-    // FPS Look
+    // FPS Look: jari virtual dikelola LookEngine (thread sendiri); di sini hanya status ON/OFF.
     private var lookActive = false
-    private var lookX = 0f
-    private var lookY = 0f
-    // Minta Injector melakukan recenter otomatis saat jarak virtual finger terlalu jauh.
-    private var lookRebasePending = false
-    // Saat recenter, jari look diangkat sebentar (lookGap) lalu dipasang lagi dengan id jari BARU,
-    // supaya game tidak melihat lompatan posisi dari id yang sama.
-    private var lookGap = false
-    private var lookGapAt = 0L
-    private var lookSw = 0
-    private var lookSh = 0
-    private var lastLookSlot = -1
-    private val lookRegrab = Runnable {
-        lookGap = false
-        if (lookActive) {
-            refresh()   // DOWN baru di titik marker
-            val dx = pendingLookDx
-            val dy = pendingLookDy
-            pendingLookDx = 0f
-            pendingLookDy = 0f
-            if (dx != 0f || dy != 0f) applyLook(dx, dy)
-        }
-    }
+    private val lookEngine = LookEngine({ screenSize() }, { dp(24).toFloat() })
     private var prevButtons = 0
-    // Coalesce mouse-look deltas so high-rate input + simultaneous key presses
-    // don't flood the injection pipe and cause stutter ("patah-patah").
-    private var pendingLookDx = 0f
-    private var pendingLookDy = 0f
-    private var lookFlushPending = false
-    private val lookFlush = Runnable {
-        lookFlushPending = false
-        if (lookActive && (pendingLookDx != 0f || pendingLookDy != 0f)) {
-            val dx = pendingLookDx
-            val dy = pendingLookDy
-            pendingLookDx = 0f
-            pendingLookDy = 0f
-            applyLook(dx, dy)
-        }
-    }
 
     // sentuhan lewat Shizuku
     private var desired: Map<String, Pair<PointF, PointF>> = emptyMap()
@@ -149,7 +113,7 @@ class OverlayService : Service() {
         // Drop the local pointer cache and rebuild DOWN events after it is READY again.
         Injector.onChange = {
             handler.post {
-                if (!Injector.ready) live.clear()
+                if (!Injector.ready) { live.clear(); lookEngine.resetState() }
                 else if (enabledMap && !editing) refresh()
             }
         }
@@ -176,6 +140,7 @@ class OverlayService : Service() {
     override fun onDestroy() {
         stopWatch()
         hideBubble()
+        lookEngine.shutdown()
         Store.prefs(this).unregisterOnSharedPreferenceChangeListener(listener)
         Injector.onChange = null
         instance = null
@@ -373,68 +338,13 @@ class OverlayService : Service() {
         r.run()
     }
 
-    // Event capture dari mouse sudah dikumpulkan per frame oleh sistem, jadi langsung diteruskan
-    // (tanpa jeda tambahan) supaya kamera tidak terlambat/patah.
+    // Gerakan mouse (sudah dijumlahkan per frame) hanya ditambahkan ke LookEngine.
     private fun onMouseMove(dx: Float, dy: Float) {
         if (!enabledMap || editing || !lookActive) return
         if (dx == 0f && dy == 0f) return
-        lastEvt = "Mouse gerak"
-        if (lookGap) {              // jari look sedang diangkat sebentar: tampung dulu
-            if (android.os.SystemClock.uptimeMillis() - lookGapAt > 100) {
-                // pengaman: jeda tidak boleh tersangkut
-                handler.removeCallbacks(lookRegrab)
-                pendingLookDx += dx
-                pendingLookDy += dy
-                lookRegrab.run()
-            } else {
-                pendingLookDx += dx
-                pendingLookDy += dy
-            }
-            return
-        }
-        applyLook(dx, dy)
-    }
-
-    private fun applyLook(dx: Float, dy: Float) {
         val m = maps.firstOrNull { it.kind == "LOOK" } ?: return
-        if (!lookActive || lookGap) return
-        lookX += dx * m.sens
-        lookY += dy * m.sensY
-        if (lookSw == 0 || lookSh == 0) {
-            val (a, b) = screenSize()
-            lookSw = a; lookSh = b
-        }
-        // Jari virtual tidak boleh keluar layar / terlalu jauh dari marker.
-        val reach = (minOf(lookSw, lookSh) * 0.45f).coerceAtLeast(300f)
-        val margin = dp(24).toFloat()
-        val minX = maxOf(margin, m.x - reach)
-        val maxX = minOf(lookSw - margin, m.x + reach)
-        val minY = maxOf(margin, m.y - reach)
-        val maxY = minOf(lookSh - margin, m.y + reach)
-        if (lookX < minX || lookX > maxX || lookY < minY || lookY > maxY) {
-            recenterLook(m)
-            return
-        }
-        moveLook()
-    }
-
-    // Hanya menggeser jari look (tanpa menghitung ulang semua sentuhan / menggambar ulang HUD).
-    private fun moveLook() {
-        val cur = live["look"]
-        if (cur == null) { refresh(); return }
-        if (cur.second.x == lookX && cur.second.y == lookY) return
-        if (Injector.touch(1, cur.first, lookX, lookY)) live["look"] = cur.first to PointF(lookX, lookY)
-    }
-
-    private fun recenterLook(m: Mapping) {
-        lastEvt = "Look recenter"
-        lookX = m.x; lookY = m.y
-        val cur = live.remove("look")
-        if (cur != null) Injector.touch(2, cur.first, cur.second.x, cur.second.y)   // angkat jari
-        lookGap = true
-        lookGapAt = android.os.SystemClock.uptimeMillis()
-        handler.removeCallbacks(lookRegrab)
-        handler.postDelayed(lookRegrab, 16)                                         // pasang lagi 16ms kemudian
+        lastEvt = "Mouse gerak"
+        lookEngine.addDelta(dx, dy, m.sens, m.sensY, m.x, m.y)
     }
 
     private fun onMouseButtons(state: Int) {
@@ -488,19 +398,13 @@ class OverlayService : Service() {
 
     private fun setLook(on: Boolean, m: Mapping) {
         if (on == lookActive) return
-        // Flush / discard any pending look motion when toggling.
-        handler.removeCallbacks(lookFlush)
-        handler.removeCallbacks(lookRegrab)
-        lookFlushPending = false
-        pendingLookDx = 0f
-        pendingLookDy = 0f
-        lookRebasePending = false
-        lookGap = false
         if (on) {
-            val (a, b) = screenSize()
-            lookSw = a; lookSh = b
-            lookActive = true; lookX = m.x; lookY = m.y
-        } else lookActive = false
+            lookActive = true
+            lookEngine.start(m.x, m.y)
+        } else {
+            lookActive = false
+            lookEngine.stop()
+        }
         updateCursorVisibility()
         refresh()
     }
@@ -511,11 +415,7 @@ class OverlayService : Service() {
             pressed.clear(); pulsing.clear(); repeaters.clear()
             handler.removeCallbacksAndMessages(null)
             lookActive = false
-            lookRebasePending = false
-            lookGap = false
-            lookFlushPending = false
-            pendingLookDx = 0f
-            pendingLookDy = 0f
+            lookEngine.stop()
             cursorDown = false; leftByCursor = false; cursorFlushPending = false
             refresh()
         }
@@ -537,9 +437,7 @@ class OverlayService : Service() {
                     val on = if (m.mode == "HOLD") m.keyCode in pressed else m.keyCode in pulsing
                     if (on) t["k${m.keyCode}"] = PointF(m.x, m.y) to PointF(m.x, m.y)
                 }
-                "LOOK" -> {
-                    if (lookActive && !lookGap) t["look"] = PointF(m.x, m.y) to PointF(lookX, lookY)
-                }
+                "LOOK" -> { /* jari look dikelola LookEngine, bukan lewat daftar sentuhan ini */ }
                 else -> {
                     if (m.keyCode in pressed) {
                         joy = m
@@ -578,9 +476,7 @@ class OverlayService : Service() {
             val target = st.second
             val cur = live[id]
             if (cur == null) {
-                val free = (0..8).filter { sl -> live.values.none { it.first == sl } }
-                val slot = if (id == "look" && free.size > 1) (free.firstOrNull { it != lastLookSlot } ?: free.first()) else free.first()
-                if (id == "look") lastLookSlot = slot
+                val slot = (0..8).first { sl -> live.values.none { it.first == sl } }
                 if (Injector.touch(0, slot, start.x, start.y)) {
                     if (target.x != start.x || target.y != start.y) Injector.touch(1, slot, target.x, target.y)
                     live[id] = slot to PointF(target.x, target.y)
@@ -706,14 +602,8 @@ class OverlayService : Service() {
                 hideCursor()
                 // Android may omit a final key/button UP when pointer capture loses
                 // focus. Clear held states and release all virtual touches together.
-                handler.removeCallbacks(lookFlush)
-                lookFlushPending = false
-                pendingLookDx = 0f
-                pendingLookDy = 0f
                 lookActive = false
-                lookRebasePending = false
-                lookGap = false
-                handler.removeCallbacks(lookRegrab)
+                lookEngine.stop()
                 prevButtons = 0
                 cursorDown = false
                 leftByCursor = false
@@ -739,14 +629,8 @@ class OverlayService : Service() {
             capture?.let { try { wm?.removeView(it) } catch (e: Exception) {} }
             capture = null
             if (lookActive) {
-                handler.removeCallbacks(lookFlush)
-                lookFlushPending = false
-                pendingLookDx = 0f
-                pendingLookDy = 0f
                 lookActive = false
-                lookRebasePending = false
-                lookGap = false
-                handler.removeCallbacks(lookRegrab)
+                lookEngine.stop()
                 refresh()
             }
             if (cursorDown) { cursorDown = false; leftByCursor = false; refresh() }
@@ -941,6 +825,8 @@ class OverlayService : Service() {
     }
 
     fun hideBubble() {
+        lookActive = false
+        lookEngine.stop()
         closePanel(); closeEditor()
         bubble?.let { try { wm?.removeView(it) } catch (e: Exception) {} }
         bubble = null
@@ -1125,7 +1011,8 @@ class OverlayService : Service() {
         val mouse = if (capture?.hasPointerCapture() == true) "OK" else "belum"
         val st = TextView(this)
         st.text = "Sambungan: $shz | Mouse: $mouse | Fokus: " + (if (capture?.hasWindowFocus() == true) "ya" else "tidak") +
-            "\nTerakhir: $lastEvt | Antrean: " + Injector.queued()
+            "\nTerakhir: $lastEvt | Antrean: " + Injector.queued() +
+            " | Look: " + (if (lookActive) "ON/" + lookEngine.recenters else "OFF")
         st.setTextColor(0xFF8FA39B.toInt())
         st.textSize = 10f
         body.addView(st, LinearLayout.LayoutParams(MP, WC).apply { topMargin = dp(6); bottomMargin = dp(6) })
@@ -1289,7 +1176,7 @@ class OverlayService : Service() {
     private fun openEditor() {
         if (editor != null) return
         editing = true
-        pressed.clear(); pulsing.clear(); lookActive = false
+        pressed.clear(); pulsing.clear(); lookActive = false; lookEngine.stop()
         refresh()
         applyHudVisibility()
         updateCapture()
