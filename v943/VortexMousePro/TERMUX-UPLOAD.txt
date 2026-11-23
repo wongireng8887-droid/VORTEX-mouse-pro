@@ -1,0 +1,18 @@
+# Cara upload di Termux (v9.4.0)
+
+cd ~/storage/shared/"APK MOBI"
+rm -rf v940 && mkdir v940
+unzip -o ~/storage/downloads/VortexMousePro_v9_4_FPSLook_Rebuilt.zip -d v940
+
+rm -rf KeyMapper/app
+cp -r v940/VortexMousePro/app KeyMapper/app
+cp v940/VortexMousePro/settings.gradle.kts KeyMapper/settings.gradle.kts
+cp v940/VortexMousePro/build.gradle.kts KeyMapper/build.gradle.kts
+cp v940/VortexMousePro/gradle.properties KeyMapper/gradle.properties
+mkdir -p KeyMapper/.github/workflows
+cp v940/VortexMousePro/.github/workflows/build.yml KeyMapper/.github/workflows/build.yml
+
+cd KeyMapper
+git add -A
+git commit -m "v9.4.0: FPS Look dibuat ulang lagi"
+git push
