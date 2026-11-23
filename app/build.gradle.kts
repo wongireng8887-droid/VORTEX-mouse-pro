@@ -4,14 +4,13 @@ plugins {
 }
 android {
     namespace = "com.example.keymapper"
-    compileSdk = 36
+    compileSdk = 34
     defaultConfig {
-        ndk { abiFilters += "arm64-v8a" }
         applicationId = "com.example.keymapper"
         minSdk = 26
-        targetSdk = 36
-        versionCode = 20
-        versionName = "9.4.4"
+        targetSdk = 34
+        versionCode = 18
+        versionName = "9.4.0"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

@@ -166,22 +166,12 @@ object Injector {
         qLock.lock()
         try {
             if (action == 1) {
-                // MOVE bersifat state terbaru, bukan transisi. Buang MOVE lama untuk
-                // pointer yang sama agar antrean tidak dipenuhi posisi kamera usang.
+                // Buang MOVE lama untuk jari yang sama setelah DOWN/UP terakhir; cukup posisi terbaru.
                 val iter = touchQueue.descendingIterator()
                 while (iter.hasNext()) {
                     val c = iter.next()
                     if (c.action == 3 || (c.id == id && c.action != 1)) break
                     if (c.id == id && c.action == 1) iter.remove()
-                }
-            } else if (action == 0 || action == 2) {
-                // DOWN/UP tombol harus segera diproses. MOVE yang masih menunggu
-                // (terutama FPS Look 250 Hz) boleh dilewati karena posisi berikutnya
-                // akan dikirim lagi oleh LookEngine; jangan biarkan gerakan lama
-                // mengantre di depan aksi tekan/lepas keyboard atau Fire.
-                val iter = touchQueue.iterator()
-                while (iter.hasNext()) {
-                    if (iter.next().action == 1) iter.remove()
                 }
             }
             if (touchQueue.isEmpty()) lastProgress = android.os.SystemClock.uptimeMillis()

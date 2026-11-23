@@ -61,10 +61,21 @@ class OverlayService : Service() {
     private var lastEvt = "-"
     private var lastWarn = 0L
 
-    // FPS Look: jari virtual dikelola LookEngine (thread sendiri); di sini hanya status ON/OFF.
+    // FPS Look (mesin terpisah, lihat FpsLook.kt)
     private var lookActive = false
-    private val lookEngine = LookEngine({ screenSize() }, { dp(24).toFloat() })
     private var prevButtons = 0
+    private var fireDragEnabled = true
+    private val lookEngine = FpsLook(
+        object : LookSink {
+            override fun down(id: Int, x: Float, y: Float): Boolean = Injector.touch(0, id, x, y)
+            override fun move(id: Int, x: Float, y: Float) { Injector.touch(1, id, x, y) }
+            override fun up(id: Int, x: Float, y: Float) { Injector.touch(2, id, x, y) }
+        },
+        object : LookClock {
+            override fun now(): Long = android.os.SystemClock.uptimeMillis()
+            override fun post(delayMs: Long, r: Runnable) { handler.postDelayed(r, delayMs) }
+            override fun cancel(r: Runnable) { handler.removeCallbacks(r) }
+        })
 
     // sentuhan lewat Shizuku
     private var desired: Map<String, Pair<PointF, PointF>> = emptyMap()
@@ -94,6 +105,7 @@ class OverlayService : Service() {
 
     private val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
         maps = Store.load(this)
+        syncLook()
         hud?.invalidate()
         updateCapture()
     }
@@ -105,15 +117,17 @@ class OverlayService : Service() {
         instance = this
         wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         maps = Store.load(this)
+        syncLook()
         bubbleSizeDp = Store.prefs(this).getInt("bubble_size", 60).coerceIn(36, 96)
         bubbleOpacity = Store.prefs(this).getFloat("bubble_opacity", 1f).coerceIn(0.2f, 1f)
         cursorSpeed = Store.prefs(this).getFloat("cursor_speed", 1.5f).coerceIn(0.5f, 4f)
+        fireDragEnabled = Store.prefs(this).getBoolean("fire_drag", true)
         Store.prefs(this).registerOnSharedPreferenceChangeListener(listener)
         // If the injector process disconnects/restarts, its virtual pointers are gone.
         // Drop the local pointer cache and rebuild DOWN events after it is READY again.
         Injector.onChange = {
             handler.post {
-                if (!Injector.ready) { live.clear(); lookEngine.resetState() }
+                if (!Injector.ready) live.clear()
                 else if (enabledMap && !editing) refresh()
             }
         }
@@ -140,7 +154,6 @@ class OverlayService : Service() {
     override fun onDestroy() {
         stopWatch()
         hideBubble()
-        lookEngine.shutdown()
         Store.prefs(this).unregisterOnSharedPreferenceChangeListener(listener)
         Injector.onChange = null
         instance = null
@@ -286,6 +299,11 @@ class OverlayService : Service() {
             }
             return true
         }
+        if (code == MOUSE_LEFT && lookEngine.ownsFire() && ms.any { it.kind == "TAP" && it.mode == "HOLD" }) {
+            lastEvt = "Tembak " + (if (down) "tekan" else "lepas")
+            if (repeat == 0) { lookEngine.fire(down); hud?.invalidate() }
+            return true
+        }
         if (ms.isEmpty()) return false
         lastEvt = keyName(code) + (if (down) " tekan" else " lepas")
         if (down) {
@@ -338,13 +356,27 @@ class OverlayService : Service() {
         r.run()
     }
 
-    // Gerakan mouse (sudah dijumlahkan per frame) hanya ditambahkan ke LookEngine.
+    // Gerakan mouse (sudah dijumlahkan per frame oleh sistem) langsung diteruskan ke mesin look.
     private fun onMouseMove(dx: Float, dy: Float) {
         if (!enabledMap || editing || !lookActive) return
         if (dx == 0f && dy == 0f) return
-        val m = maps.firstOrNull { it.kind == "LOOK" } ?: return
         lastEvt = "Mouse gerak"
-        lookEngine.addDelta(dx, dy, m.sens, m.sensY, m.x, m.y)
+        lookEngine.onDelta(dx, dy)
+    }
+
+    // Samakan pengaturan mesin look dengan pemetaan dan pengaturan saat ini.
+    private fun syncLook() {
+        val m = maps.firstOrNull { it.kind == "LOOK" }
+        val fire = maps.firstOrNull { it.kind == "TAP" && it.keyCode == MOUSE_LEFT && it.mode == "HOLD" }
+        if (m != null) {
+            lookEngine.lookX = m.x; lookEngine.lookY = m.y
+            lookEngine.sensX = m.sens; lookEngine.sensY = m.sensY
+        }
+        lookEngine.fireEnabled = fireDragEnabled && fire != null
+        if (fire != null) { lookEngine.fireX = fire.x; lookEngine.fireY = fire.y }
+        val (w, h) = screenSize()
+        lookEngine.screenW = w; lookEngine.screenH = h
+        lookEngine.configChanged()
     }
 
     private fun onMouseButtons(state: Int) {
@@ -399,11 +431,20 @@ class OverlayService : Service() {
     private fun setLook(on: Boolean, m: Mapping) {
         if (on == lookActive) return
         if (on) {
+            syncLook()
             lookActive = true
-            lookEngine.start(m.x, m.y)
+            lookEngine.setActive(true)
+            // klik kiri sudah ditahan saat Look dinyalakan: serahkan ke mesin look
+            if (lookEngine.ownsFire() && MOUSE_LEFT in pressed) {
+                pressed.remove(MOUSE_LEFT)
+                lookEngine.fire(true)
+            }
         } else {
+            val wasFiring = lookEngine.firing
             lookActive = false
-            lookEngine.stop()
+            lookEngine.setActive(false)
+            // klik kiri masih ditahan saat Look dimatikan: kembali ke tombol tembak biasa
+            if (wasFiring) pressed.add(MOUSE_LEFT)
         }
         updateCursorVisibility()
         refresh()
@@ -414,8 +455,7 @@ class OverlayService : Service() {
         if (!on) {
             pressed.clear(); pulsing.clear(); repeaters.clear()
             handler.removeCallbacksAndMessages(null)
-            lookActive = false
-            lookEngine.stop()
+            lookEngine.reset(); lookActive = false
             cursorDown = false; leftByCursor = false; cursorFlushPending = false
             refresh()
         }
@@ -435,15 +475,11 @@ class OverlayService : Service() {
             when (m.kind) {
                 "TAP" -> {
                     val on = if (m.mode == "HOLD") m.keyCode in pressed else m.keyCode in pulsing
-                    if (on) t["k${m.keyCode}"] = PointF(m.x, m.y) to PointF(m.x, m.y)
+                    // klik kiri (tembak) dipegang mesin look saat Look ON: jarinya ikut kamera
+                    val byLook = m.keyCode == MOUSE_LEFT && m.mode == "HOLD" && lookEngine.ownsFire()
+                    if (on && !byLook) t["k${m.keyCode}"] = PointF(m.x, m.y) to PointF(m.x, m.y)
                 }
-                "LOOK" -> { /* jari look dikelola LookEngine, bukan lewat daftar sentuhan ini */ }
-                else -> {
-                    if (m.keyCode in pressed) {
-                        joy = m
-                        when (m.kind) { "UP" -> jy -= 1f; "DOWN" -> jy += 1f; "LEFT" -> jx -= 1f; "RIGHT" -> jx += 1f }
-                    }
-                }
+                "LOOK" -> {}
             }
         }
         joy?.let {
@@ -497,6 +533,7 @@ class OverlayService : Service() {
 
     private fun persist(list: List<Mapping>) {
         Store.save(this, list); maps = list
+        syncLook()
         hud?.invalidate()
         updateCapture()
     }
@@ -551,65 +588,35 @@ class OverlayService : Service() {
 
     // ---------- tangkap keyboard & mouse (jendela fokus kecil) ----------
     private inner class CaptureView(c: Context) : View(c) {
-        // Fallback baseline untuk perangkat yang tidak mengirim AXIS_RELATIVE_X/Y.
-        // getX/getY adalah koordinat posisi; jangan dijumlahkan sebagai delta.
-        private var lastAbsX = Float.NaN
-        private var lastAbsY = Float.NaN
-
-        private fun absoluteDeltaX(e: MotionEvent): Float {
-            var total = 0f
-            var previous = lastAbsX
-            for (i in 0 until e.historySize) {
-                val sample = e.getHistoricalX(i)
-                if (!previous.isNaN()) total += sample - previous
-                previous = sample
-            }
-            val current = e.x
-            if (!previous.isNaN()) total += current - previous
-            lastAbsX = current
-            return total
-        }
-
-        private fun absoluteDeltaY(e: MotionEvent): Float {
-            var total = 0f
-            var previous = lastAbsY
-            for (i in 0 until e.historySize) {
-                val sample = e.getHistoricalY(i)
-                if (!previous.isNaN()) total += sample - previous
-                previous = sample
-            }
-            val current = e.y
-            if (!previous.isNaN()) total += current - previous
-            lastAbsY = current
-            return total
-        }
-
         init {
             isFocusable = true
             isFocusableInTouchMode = true
             setOnCapturedPointerListener { _, e ->
                 onMouseButtons(e.buttonState)
+                // Pointer-capture memberi pergeseran relatif lewat getX/getY. Sistem MENGELOMPOKKAN banyak
+                // sampel mouse dalam satu event (history) per frame. Hanya membaca sampel terakhir membuat
+                // gerakan hilang (terasa lag / kadang tidak mau drag, apalagi saat game berat sambil menembak).
+                // Maka semua sampel dijumlahkan. Event tombol (PRESS/RELEASE) tidak dihitung agar tidak ganda.
                 val act = e.actionMasked
                 if (act == MotionEvent.ACTION_MOVE || act == MotionEvent.ACTION_HOVER_MOVE) {
-                    // Relative axes benar-benar berisi delta per sampel. Historical relative axes
-                    // harus dijumlahkan bersama current axis; getX/getY bukan delta.
-                    var dx = e.getAxisValue(MotionEvent.AXIS_RELATIVE_X)
-                    var dy = e.getAxisValue(MotionEvent.AXIS_RELATIVE_Y)
+                    var dx = e.x
+                    var dy = e.y
                     for (i in 0 until e.historySize) {
-                        dx += e.getHistoricalAxisValue(MotionEvent.AXIS_RELATIVE_X, i)
-                        dy += e.getHistoricalAxisValue(MotionEvent.AXIS_RELATIVE_Y, i)
+                        dx += e.getHistoricalX(i)
+                        dy += e.getHistoricalY(i)
                     }
-
-                    // Selalu perbarui baseline absolut agar fallback tidak loncat ketika dipakai.
-                    if (dx == 0f) dx = absoluteDeltaX(e) else lastAbsX = e.x
-                    if (dy == 0f) dy = absoluteDeltaY(e) else lastAbsY = e.y
-
+                    if (dx == 0f && dy == 0f) {
+                        // sebagian perangkat hanya mengisi sumbu relatif
+                        dx = e.getAxisValue(MotionEvent.AXIS_RELATIVE_X)
+                        dy = e.getAxisValue(MotionEvent.AXIS_RELATIVE_Y)
+                        for (i in 0 until e.historySize) {
+                            dx += e.getHistoricalAxisValue(MotionEvent.AXIS_RELATIVE_X, i)
+                            dy += e.getHistoricalAxisValue(MotionEvent.AXIS_RELATIVE_Y, i)
+                        }
+                    }
                     if (dx != 0f || dy != 0f) {
                         if (lookActive) onMouseMove(dx, dy) else moveCursorBy(dx, dy)
                     }
-                } else if (act == MotionEvent.ACTION_CANCEL) {
-                    lastAbsX = Float.NaN
-                    lastAbsY = Float.NaN
                 }
                 true
             }
@@ -629,13 +636,10 @@ class OverlayService : Service() {
             if (hasWindowFocus) {
                 requestPointerCapture(); showCursor()
             } else {
-                lastAbsX = Float.NaN
-                lastAbsY = Float.NaN
                 hideCursor()
                 // Android may omit a final key/button UP when pointer capture loses
                 // focus. Clear held states and release all virtual touches together.
-                lookActive = false
-                lookEngine.stop()
+                lookEngine.reset(); lookActive = false
                 prevButtons = 0
                 cursorDown = false
                 leftByCursor = false
@@ -660,11 +664,7 @@ class OverlayService : Service() {
         } else if (!need && capture != null) {
             capture?.let { try { wm?.removeView(it) } catch (e: Exception) {} }
             capture = null
-            if (lookActive) {
-                lookActive = false
-                lookEngine.stop()
-                refresh()
-            }
+            if (lookActive) { lookEngine.reset(); lookActive = false; refresh() }
             if (cursorDown) { cursorDown = false; leftByCursor = false; refresh() }
             hideCursor()
             prevButtons = 0
@@ -689,7 +689,7 @@ class OverlayService : Service() {
             val groups = maps.filter { isJoy(it) }.groupBy { "${it.x},${it.y}" }
             for (g in groups.values) drawJoy(cv, g, loc)
             for (m in maps) {
-                val hot = m.keyCode in pressed || m.keyCode in pulsing
+                val hot = m.keyCode in pressed || m.keyCode in pulsing || (m.keyCode == MOUSE_LEFT && lookEngine.firing)
                 when (m.kind) {
                     "TAP" -> drawKey(cv, m.x - loc[0], m.y - loc[1], shortName(m.keyCode), m.keyCode == selKey, hot,
                         (m.radius / 150f).coerceIn(0.4f, 2f))
@@ -857,8 +857,6 @@ class OverlayService : Service() {
     }
 
     fun hideBubble() {
-        lookActive = false
-        lookEngine.stop()
         closePanel(); closeEditor()
         bubble?.let { try { wm?.removeView(it) } catch (e: Exception) {} }
         bubble = null
@@ -1043,8 +1041,7 @@ class OverlayService : Service() {
         val mouse = if (capture?.hasPointerCapture() == true) "OK" else "belum"
         val st = TextView(this)
         st.text = "Sambungan: $shz | Mouse: $mouse | Fokus: " + (if (capture?.hasWindowFocus() == true) "ya" else "tidak") +
-            "\nTerakhir: $lastEvt | Antrean: " + Injector.queued() +
-            " | Look: " + (if (lookActive) "ON/" + lookEngine.recenters else "OFF")
+            "\nTerakhir: $lastEvt | Antrean: " + Injector.queued()
         st.setTextColor(0xFF8FA39B.toInt())
         st.textSize = 10f
         body.addView(st, LinearLayout.LayoutParams(MP, WC).apply { topMargin = dp(6); bottomMargin = dp(6) })
@@ -1129,8 +1126,12 @@ class OverlayService : Service() {
                 Toast.makeText(this, "Kecepatan kursor x$cursorSpeed", Toast.LENGTH_SHORT).show()
                 rebuild()
             },
-            tile(R.drawable.ic_settings, "Macro", null, MINT, true) {
-                Toast.makeText(this, "Macro belum tersedia", Toast.LENGTH_SHORT).show()
+            tile(R.drawable.ic_game, "Drag Tembak", if (fireDragEnabled) "ON" else "OFF", if (fireDragEnabled) onColor else offColor) {
+                fireDragEnabled = !fireDragEnabled
+                Store.prefs(this).edit().putBoolean("fire_drag", fireDragEnabled).apply()
+                syncLook()
+                Toast.makeText(this, if (fireDragEnabled) "Drag tembak ON: tahan klik kiri lalu geser mouse" else "Drag tembak OFF", Toast.LENGTH_SHORT).show()
+                rebuild()
             }))
         grid.addView(row2(
             tile(R.drawable.ic_game, "Mapping", if (enabledMap) "ON" else "OFF", if (enabledMap) onColor else offColor) {
@@ -1208,7 +1209,7 @@ class OverlayService : Service() {
     private fun openEditor() {
         if (editor != null) return
         editing = true
-        pressed.clear(); pulsing.clear(); lookActive = false; lookEngine.stop()
+        pressed.clear(); pulsing.clear(); lookEngine.reset(); lookActive = false
         refresh()
         applyHudVisibility()
         updateCapture()

@@ -54,22 +54,40 @@ object InjectMain {
         println("READY")
         System.out.flush()
         val r = BufferedReader(InputStreamReader(System.`in`))
+        val pend = LinkedHashMap<Int, FloatArray>()
+        // gerakan yang menumpuk digabung: hanya posisi terbaru, dikirim sebagai SATU event MOVE
+        fun flushMoves() {
+            if (pend.isEmpty()) return
+            var any = false
+            for ((id, p) in pend) {
+                val cur = pts[id] ?: continue
+                cur[0] = p[0]; cur[1] = p[1]; any = true
+            }
+            pend.clear()
+            if (any) send(MotionEvent.ACTION_MOVE)
+        }
         while (true) {
             val line = r.readLine() ?: break
             try {
                 val p = line.trim().split(' ')
-                when (p[0]) {
-                    "D" -> touch(0, p[1].toInt(), p[2].toFloat(), p[3].toFloat())
-                    "M" -> touch(1, p[1].toInt(), p[2].toFloat(), p[3].toFloat())
-                    "U" -> touch(2, p[1].toInt(), 0f, 0f)
-                    "R" -> releaseAll()
-                    "Q" -> { releaseAll(); return }
+                if (p[0] == "M") {
+                    pend[p[1].toInt()] = floatArrayOf(p[2].toFloat(), p[3].toFloat())
+                } else {
+                    flushMoves()
+                    when (p[0]) {
+                        "D" -> touch(0, p[1].toInt(), p[2].toFloat(), p[3].toFloat())
+                        "U" -> touch(2, p[1].toInt(), 0f, 0f)
+                        "R" -> releaseAll()
+                        "Q" -> { releaseAll(); return }
+                    }
                 }
+                if (!r.ready()) flushMoves()
             } catch (e: Throwable) {
                 val m = "ERR " + e
                 if (m != lastErr) { lastErr = m; println(m); System.out.flush() }
             }
         }
+        flushMoves()
         releaseAll()
     }
 
