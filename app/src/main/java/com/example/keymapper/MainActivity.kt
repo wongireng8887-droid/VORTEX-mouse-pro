@@ -796,9 +796,12 @@ class MainActivity : Activity() {
         val heading = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         heading.addView(label("Optimisasi Performa", 21f, Color.WHITE, true))
         heading.addView(View(this).apply {
-            background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
-                intArrayOf(MINT, 0x0000E6B3))
-            cornerRadius = dp(4).toFloat()
+            background = GradientDrawable(
+                GradientDrawable.Orientation.LEFT_RIGHT,
+                intArrayOf(MINT, 0x0000E6B3)
+            ).apply {
+                cornerRadius = dp(4).toFloat()
+            }
         }, LinearLayout.LayoutParams(0, dp(4), 1f).apply { leftMargin = dp(16) })
         left.addView(heading, LinearLayout.LayoutParams(M, W).apply { bottomMargin = dp(10) })
         left.addView(preferenceSwitch("perf_mode", "Mode Performa",
