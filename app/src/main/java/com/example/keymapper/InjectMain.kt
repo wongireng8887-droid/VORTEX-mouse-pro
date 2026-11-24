@@ -11,6 +11,7 @@ import java.lang.reflect.Method
 
 // Dijalankan sebagai shell lewat app_process. Perintah dari stdin:
 //   D slot x y   (sentuh)    M slot x y   (geser)    U slot   (lepas)    R   (lepas semua)    Q   (keluar)
+//   T slot x y   (mulai ketuk berulang)    S slot   (hentikan ketuk berulang)
 object InjectMain {
     private var input: Any? = null
     private var inject: Method? = null
@@ -19,6 +20,12 @@ object InjectMain {
     private var downTime = 0L
     private var devId = 0
     private var lastErr = ""
+    private val lock = Any()
+    // ketuk berulang (mode Repeat) dijalankan di sini, bukan di thread utama aplikasi
+    private val tapper = RepeatTapper(object : TapSink {
+        override fun down(id: Int, x: Float, y: Float) { try { touch(0, id, x, y) } catch (e: Throwable) {} }
+        override fun up(id: Int) { try { touch(2, id, 0f, 0f) } catch (e: Throwable) {} }
+    })
 
     @JvmStatic
     fun main(args: Array<String>) {
@@ -58,13 +65,15 @@ object InjectMain {
         // gerakan yang menumpuk digabung: hanya posisi terbaru, dikirim sebagai SATU event MOVE
         fun flushMoves() {
             if (pend.isEmpty()) return
-            var any = false
-            for ((id, p) in pend) {
-                val cur = pts[id] ?: continue
-                cur[0] = p[0]; cur[1] = p[1]; any = true
+            synchronized(lock) {
+                var any = false
+                for ((id, p) in pend) {
+                    val cur = pts[id] ?: continue
+                    cur[0] = p[0]; cur[1] = p[1]; any = true
+                }
+                pend.clear()
+                if (any) send(MotionEvent.ACTION_MOVE)
             }
-            pend.clear()
-            if (any) send(MotionEvent.ACTION_MOVE)
         }
         while (true) {
             val line = r.readLine() ?: break
@@ -77,8 +86,10 @@ object InjectMain {
                     when (p[0]) {
                         "D" -> touch(0, p[1].toInt(), p[2].toFloat(), p[3].toFloat())
                         "U" -> touch(2, p[1].toInt(), 0f, 0f)
-                        "R" -> releaseAll()
-                        "Q" -> { releaseAll(); return }
+                        "T" -> tapper.start(p[1].toInt(), p[2].toFloat(), p[3].toFloat())
+                        "S" -> tapper.stop(p[1].toInt())
+                        "R" -> { tapper.stopAll(); releaseAll() }
+                        "Q" -> { tapper.stopAll(); releaseAll(); return }
                     }
                 }
                 if (!r.ready()) flushMoves()
@@ -88,10 +99,15 @@ object InjectMain {
             }
         }
         flushMoves()
+        tapper.stopAll()
         releaseAll()
     }
 
     private fun touch(action: Int, id: Int, x: Float, y: Float) {
+        synchronized(lock) { touchLocked(action, id, x, y) }
+    }
+
+    private fun touchLocked(action: Int, id: Int, x: Float, y: Float) {
         when (action) {
             0 -> {
                 if (pts.isEmpty()) downTime = SystemClock.uptimeMillis()
@@ -116,6 +132,10 @@ object InjectMain {
     }
 
     private fun releaseAll() {
+        synchronized(lock) { releaseAllLocked() }
+    }
+
+    private fun releaseAllLocked() {
         try {
             for (id in pts.keys.toList()) touch(2, id, 0f, 0f)
             pts.clear()

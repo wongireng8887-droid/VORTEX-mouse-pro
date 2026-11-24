@@ -50,33 +50,42 @@ object Injector {
 
     private fun workerLoop() {
         while (true) {
-            var command: TouchCommand? = null
+            // Ambil beberapa perintah sekaligus lalu tulis dengan SATU write+flush (lebih sedikit syscall saat ramai).
+            val batch = ArrayList<TouchCommand>(16)
             qLock.lock()
             try {
                 while (touchQueue.isEmpty()) qCond.await()
-                command = touchQueue.removeFirst()
+                while (touchQueue.isNotEmpty() && batch.size < 24) batch.add(touchQueue.removeFirst())
             } catch (e: InterruptedException) {
                 return
             } finally {
                 qLock.unlock()
             }
-            val cmd = command ?: continue
+            if (batch.isEmpty()) continue
             try {
-                val line = when (cmd.action) {
-                    0 -> "D ${cmd.id} ${cmd.x} ${cmd.y}"
-                    1 -> "M ${cmd.id} ${cmd.x} ${cmd.y}"
-                    2 -> "U ${cmd.id}"
-                    else -> "R"
-                } + "\n"
+                val sb = StringBuilder()
+                for (cmd in batch) {
+                    when (cmd.action) {
+                        0 -> sb.append("D ").append(cmd.id).append(' ').append(Math.round(cmd.x)).append(' ').append(Math.round(cmd.y))
+                        1 -> sb.append("M ").append(cmd.id).append(' ').append(Math.round(cmd.x)).append(' ').append(Math.round(cmd.y))
+                        2 -> sb.append("U ").append(cmd.id)
+                        4 -> sb.append("T ").append(cmd.id).append(' ').append(Math.round(cmd.x)).append(' ').append(Math.round(cmd.y))
+                        5 -> sb.append("S ").append(cmd.id)
+                        else -> sb.append("R")
+                    }
+                    sb.append('\n')
+                }
+                val bytes = sb.toString().toByteArray()
                 val wrote = synchronized(lock) {
                     val out = conn?.output
                     if (out == null || !ready) false
                     else {
-                        out.write(line.toByteArray())
+                        out.write(bytes)
                         out.flush()
                         true
                     }
                 }
+                if (!wrote) clearQueue() else lastProgress = android.os.SystemClock.uptimeMillis()
                 if (!wrote) clearQueue() else lastProgress = android.os.SystemClock.uptimeMillis()
             } catch (e: Exception) {
                 ready = false
@@ -183,6 +192,11 @@ object Injector {
         ensureWorker()
         return true
     }
+
+    // Ketuk berulang dijalankan oleh proses shell (tidak membebani thread utama).
+    fun repeatStart(id: Int, x: Float, y: Float): Boolean = touch(4, id, x, y)
+
+    fun repeatStop(id: Int) { touch(5, id, 0f, 0f) }
 
     fun releaseAll() {
         if (!ready || conn?.output == null) return

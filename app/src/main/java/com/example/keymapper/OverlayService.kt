@@ -43,6 +43,7 @@ private const val MINT = 0xFF34D399.toInt()
 
 class OverlayService : Service() {
     companion object {
+        private const val REPEAT_BASE = 11
         var instance: OverlayService? = null
         const val ACTION_SHOW = "vortex.SHOW"
         const val ACTION_HIDE = "vortex.HIDE"
@@ -106,7 +107,7 @@ class OverlayService : Service() {
     private val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
         maps = Store.load(this)
         syncLook()
-        invalidateHud()
+        hud?.postInvalidateOnAnimation()
         updateCapture()
     }
 
@@ -301,11 +302,10 @@ class OverlayService : Service() {
         }
         if (code == MOUSE_LEFT && lookEngine.ownsFire() && ms.any { it.kind == "TAP" && it.mode == "HOLD" }) {
             lastEvt = "Tembak " + (if (down) "tekan" else "lepas")
-            if (repeat == 0) { lookEngine.fire(down); invalidateHud() }
+            if (repeat == 0) { lookEngine.fire(down); hud?.postInvalidateOnAnimation() }
             return true
         }
         if (ms.isEmpty()) return false
-        if (down && repeat > 0) return true      // auto-repeat saat tombol ditahan: tidak ada perubahan
         lastEvt = keyName(code) + (if (down) " tekan" else " lepas")
         if (down) {
             if (repeat == 0) {
@@ -321,6 +321,7 @@ class OverlayService : Service() {
             }
         } else {
             pressed.remove(code)
+            stopRepeat(code)
             for (m in ms) if (m.kind == "TAP" && m.mode == "RELEASE") pulse(code, 1)
         }
         refresh()
@@ -341,20 +342,25 @@ class OverlayService : Service() {
         step.run()
     }
 
+    // Mode Repeat: ketukan berulang dijalankan di proses shell, tanpa refresh()/HUD per ketukan.
+    private val repeatIds = HashMap<Int, Int>()
+
     private fun startRepeat(code: Int) {
-        if (repeaters.containsKey(code)) return
-        val r = object : Runnable {
-            override fun run() {
-                if (code !in pressed) {
-                    pulsing.remove(code); repeaters.remove(code); refresh(); return
-                }
-                if (code in pulsing) pulsing.remove(code) else pulsing.add(code)
-                refresh()
-                handler.postDelayed(this, 45)
-            }
-        }
-        repeaters[code] = r
-        r.run()
+        if (repeatIds.containsKey(code)) return
+        val m = maps.firstOrNull { it.keyCode == code && it.kind == "TAP" } ?: return
+        val id = (REPEAT_BASE until REPEAT_BASE + 8).firstOrNull { it !in repeatIds.values } ?: return
+        if (Injector.repeatStart(id, m.x, m.y)) repeatIds[code] = id
+    }
+
+    private fun stopRepeat(code: Int) {
+        val id = repeatIds.remove(code) ?: return
+        Injector.repeatStop(id)
+    }
+
+    private fun stopAllRepeats() {
+        if (repeatIds.isEmpty()) return
+        for (id in repeatIds.values.toList()) Injector.repeatStop(id)
+        repeatIds.clear()
     }
 
     // Gerakan mouse (sudah dijumlahkan per frame oleh sistem) langsung diteruskan ke mesin look.
@@ -454,9 +460,8 @@ class OverlayService : Service() {
     private fun setMapping(on: Boolean) {
         enabledMap = on
         if (!on) {
-            pressed.clear(); pulsing.clear(); repeaters.clear()
+            pressed.clear(); stopAllRepeats(); pulsing.clear(); repeaters.clear()
             handler.removeCallbacksAndMessages(null)
-            hudDirty = false
             lookEngine.reset(); lookActive = false
             cursorDown = false; leftByCursor = false; cursorFlushPending = false
             refresh()
@@ -497,7 +502,7 @@ class OverlayService : Service() {
         }
         if (cursorDown && curX >= 0f) t["cur"] = PointF(curX, curY) to PointF(curX, curY)
         desired = t
-        invalidateHud()
+        hud?.postInvalidateOnAnimation()
         if (t.isNotEmpty() && !Injector.ready) {
             Injector.autoStart(this, null)
             val now = System.currentTimeMillis()
@@ -543,7 +548,7 @@ class OverlayService : Service() {
     private fun persist(list: List<Mapping>) {
         Store.save(this, list); maps = list
         syncLook()
-        invalidateHud()
+        hud?.postInvalidateOnAnimation()
         updateCapture()
     }
 
@@ -652,7 +657,7 @@ class OverlayService : Service() {
                 prevButtons = 0
                 cursorDown = false
                 leftByCursor = false
-                pressed.clear()
+                pressed.clear(); stopAllRepeats()
                 pulsing.clear()
                 repeaters.values.forEach { handler.removeCallbacks(it) }
                 repeaters.clear()
@@ -792,23 +797,12 @@ class OverlayService : Service() {
         v.alpha = 0.55f
         val lp = WindowManager.LayoutParams(MP, MP, overlayType(),
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT)
         if (Build.VERSION.SDK_INT >= 28) {
             lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         }
-        hudDirty = false
         try { wm?.addView(v, lp); hud = v; applyHudVisibility() } catch (e: Exception) {}
-    }
-
-    // Gambar ulang HUD digabung: banyak perubahan dalam 33 ms = satu kali gambar.
-    private var hudDirty = false
-    private val hudTick = Runnable { hudDirty = false; hud?.invalidate() }
-    private fun invalidateHud() {
-        if (hudDirty) return
-        hudDirty = true
-        handler.postDelayed(hudTick, 33)
     }
 
     private fun hideHud() {
@@ -1229,7 +1223,7 @@ class OverlayService : Service() {
     private fun openEditor() {
         if (editor != null) return
         editing = true
-        pressed.clear(); pulsing.clear(); lookEngine.reset(); lookActive = false
+        pressed.clear(); stopAllRepeats(); pulsing.clear(); lookEngine.reset(); lookActive = false
         refresh()
         applyHudVisibility()
         updateCapture()
