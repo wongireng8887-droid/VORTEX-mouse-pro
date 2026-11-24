@@ -55,7 +55,7 @@ object Injector {
             qLock.lock()
             try {
                 while (touchQueue.isEmpty()) qCond.await()
-                while (touchQueue.isNotEmpty() && batch.size < 24) batch.add(touchQueue.removeFirst())
+                while (touchQueue.isNotEmpty() && batch.size < 8) batch.add(touchQueue.removeFirst())
             } catch (e: InterruptedException) {
                 return
             } finally {
@@ -85,7 +85,6 @@ object Injector {
                         true
                     }
                 }
-                if (!wrote) clearQueue() else lastProgress = android.os.SystemClock.uptimeMillis()
                 if (!wrote) clearQueue() else lastProgress = android.os.SystemClock.uptimeMillis()
             } catch (e: Exception) {
                 ready = false

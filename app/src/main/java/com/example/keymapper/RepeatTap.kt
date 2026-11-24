@@ -52,14 +52,22 @@ class RepeatTapper(private val sink: TapSink, private val periodMs: Long = 45L) 
     private fun ensureThread() {
         if (thread != null) return
         val t = Thread {
+            val periodNs = periodMs.coerceAtLeast(1L) * 1_000_000L
+            var nextTick = System.nanoTime() + periodNs
             while (true) {
-                try { Thread.sleep(periodMs) } catch (e: InterruptedException) { return@Thread }
+                try {
+                    val waitNs = nextTick - System.nanoTime()
+                    if (waitNs > 0L) java.util.concurrent.TimeUnit.NANOSECONDS.sleep(waitNs)
+                } catch (e: InterruptedException) { return@Thread }
+
                 var exit = false
                 synchronized(lock) {
                     if (states.isEmpty()) {
                         thread = null
                         exit = true
                     } else {
+                        // Sink hanya memasukkan perintah ke antrean Injector; interval dijaga
+                        // memakai jam monoton agar keterlambatan kecil tidak terus menumpuk.
                         for ((id, st) in states) {
                             if (st.isDown) { sink.up(id); st.isDown = false }
                             else { sink.down(id, st.x, st.y); st.isDown = true }
@@ -67,6 +75,11 @@ class RepeatTapper(private val sink: TapSink, private val periodMs: Long = 45L) 
                     }
                 }
                 if (exit) return@Thread
+
+                nextTick += periodNs
+                // Jangan mengejar tick yang terlewat secara bertubi-tubi; lanjutkan dari sekarang.
+                val now = System.nanoTime()
+                if (nextTick <= now) nextTick = now + periodNs
             }
         }
         t.isDaemon = true
