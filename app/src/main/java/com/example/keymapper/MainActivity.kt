@@ -1,6 +1,7 @@
 package com.example.keymapper
 
 import android.app.Activity
+import android.app.ActivityManager
 import android.app.AlertDialog
 import android.content.Context
 import android.content.res.ColorStateList
@@ -15,6 +16,7 @@ import android.hardware.input.InputManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.StatFs
 import android.provider.Settings
 import android.view.Gravity
 import android.view.InputDevice
@@ -35,14 +37,14 @@ import android.text.Editable
 import android.text.TextWatcher
 
 class MainActivity : Activity() {
-    private val BG = 0xFF0F1715.toInt()
-    private val CARD = 0xFF1A2420.toInt()
-    private val GREEN = 0xFF0F6B4B.toInt()
-    private val MINT = 0xFF34D399.toInt()
-    private val MUTED = 0xFF8A9A94.toInt()
-    private val NAV = 0xFF121C18.toInt()
+    private val BG = 0xFF020D0B.toInt()
+    private val CARD = 0xFF09231D.toInt()
+    private val GREEN = 0xFF00A879.toInt()
+    private val MINT = 0xFF00E6B3.toInt()
+    private val MUTED = 0xFFA8BCB6.toInt()
+    private val NAV = 0xFF031713.toInt()
     private val AMBER = 0xFFF59E0B.toInt()
-    private val navIcons = listOf(R.drawable.ic_game, R.drawable.ic_keyboard, R.drawable.ic_settings)
+    private val navIcons = listOf(R.drawable.ic_game, R.drawable.ic_power, R.drawable.ic_settings)
     private val M = ViewGroup.LayoutParams.MATCH_PARENT
     private val W = ViewGroup.LayoutParams.WRAP_CONTENT
 
@@ -194,45 +196,89 @@ class MainActivity : Activity() {
     }
 
     private fun updateStatus() {
-        setChip(chipMouse, "Mouse", hasMouse())
-        setChip(chipKb, "Keyboard", hasKeyboard())
-        setChip(chipSvc, if (Injector.ready) "Terhubung" else "Belum terhubung", Injector.ready)
+        // Status koneksi ditampilkan langsung pada header; select() membangun ulang tampilan.
     }
+
+
+    private fun neonBg(color: Int = CARD, radius: Int = 18): GradientDrawable =
+        GradientDrawable().apply {
+            setColor(color)
+            cornerRadius = dp(radius).toFloat()
+            setStroke(dp(1), 0xFF087D65.toInt())
+        }
 
     private fun topBar(): View {
         val bar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(20), dp(10), dp(20), dp(6))
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(22), dp(8), dp(22), dp(8))
+            background = GradientDrawable(
+                GradientDrawable.Orientation.LEFT_RIGHT,
+                intArrayOf(0xFF04231C.toInt(), 0xFF03110E.toInt(), 0xFF020D0B.toInt())
+            )
         }
         val logo = ImageView(this).apply {
             setImageResource(R.drawable.vortex_app_icon)
             scaleType = ImageView.ScaleType.FIT_CENTER
-            setBackgroundColor(Color.TRANSPARENT)
-            contentDescription = "Vortex Mouse Pro"
         }
-        bar.addView(logo, LinearLayout.LayoutParams(dp(40), dp(40)))
-        val titles = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(10), 0, 0, 0) }
-        titles.addView(label("Vortex Mouse Pro", 17f, Color.WHITE, true).apply { maxLines = 1 })
-        titles.addView(label("Keyboard dan mouse untuk game", 11f, MUTED, false).apply { maxLines = 1 })
+        bar.addView(logo, LinearLayout.LayoutParams(dp(58), dp(58)))
+        val titles = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, 0, 0) }
+        val title = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        title.addView(label("Vortex Mouse ", 23f, Color.WHITE, true))
+        title.addView(label("Pro", 23f, MINT, true))
+        titles.addView(title)
+        titles.addView(label("Gaming Controller", 14f, MUTED, false))
         bar.addView(titles, LinearLayout.LayoutParams(0, W, 1f))
-        chipMouse = chip(); chipKb = chip(); chipSvc = chip()
-        listOf(chipMouse, chipKb, chipSvc).forEach {
-            bar.addView(it, LinearLayout.LayoutParams(W, W).apply { leftMargin = dp(8) })
+
+        val status = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = neonBg(0xFF041A15.toInt(), 28)
+            setPadding(dp(16), dp(8), dp(16), dp(8))
         }
+        status.addView(View(this).apply { background = rounded(MINT, 20) },
+            LinearLayout.LayoutParams(dp(10), dp(10)))
+        status.addView(label(if (Injector.ready) "Terhubung" else "Belum terhubung", 14f, MINT, true).apply {
+            setPadding(dp(10), 0, dp(12), 0)
+        })
+        status.addView(label("│", 22f, MUTED, false))
+        status.addView(ImageView(this).apply {
+            setImageResource(R.drawable.ic_mouse); setColorFilter(Color.WHITE)
+        }, LinearLayout.LayoutParams(dp(24), dp(24)).apply { leftMargin = dp(12) })
+        status.addView(ImageView(this).apply {
+            setImageResource(R.drawable.ic_keyboard); setColorFilter(Color.WHITE)
+        }, LinearLayout.LayoutParams(dp(24), dp(24)).apply { leftMargin = dp(18) })
+        status.addView(ImageView(this).apply {
+            setImageResource(R.drawable.ic_settings); setColorFilter(Color.WHITE)
+        }, LinearLayout.LayoutParams(dp(24), dp(24)).apply { leftMargin = dp(18) })
+        bar.addView(status)
         return bar
     }
 
     private fun bottomNav(): View {
-        val nav = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setBackgroundColor(NAV) }
-        val names = listOf("Mulai Game", "Pemetaan", "Pengaturan")
+        val nav = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = neonBg(0xFF03130F.toInt(), 24)
+            setPadding(0, dp(5), 0, dp(5))
+        }
+        val names = listOf("Game", "Optimisasi Performa", "Pengaturan")
         navItems = names.mapIndexed { i, n ->
             LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
-                setPadding(0, dp(10), 0, dp(10))
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setPadding(dp(4), dp(6), dp(4), dp(6))
                 setOnClickListener { select(i) }
-                addView(ImageView(context).apply { setImageResource(navIcons[i]) }, LinearLayout.LayoutParams(dp(20), dp(20)))
+                addView(ImageView(context).apply {
+                    setImageResource(navIcons[i])
+                    setColorFilter(if (i == tab) MINT else 0xFFD0DAD6.toInt())
+                }, LinearLayout.LayoutParams(dp(28), dp(28)))
                 addView(TextView(context).apply {
-                    text = n; textSize = 14f; typeface = Typeface.DEFAULT_BOLD; setPadding(dp(8), 0, 0, 0)
+                    text = n
+                    textSize = if (i == 1) 13f else 14f
+                    typeface = Typeface.DEFAULT_BOLD
+                    setTextColor(if (i == tab) MINT else 0xFFD0DAD6.toInt())
+                    gravity = Gravity.CENTER
+                    maxLines = 1
                 })
             }
         }
@@ -243,45 +289,88 @@ class MainActivity : Activity() {
     private fun select(i: Int) {
         tab = i
         navItems.forEachIndexed { j, t ->
-            val c = if (j == i) Color.WHITE else MUTED
-            (t.getChildAt(0) as ImageView).setColorFilter(c)
-            (t.getChildAt(1) as TextView).setTextColor(c)
-            t.setBackgroundColor(if (j == i) GREEN else NAV)
+            val active = j == i
+            t.background = if (active) neonBg(0xFF06392D.toInt(), 18) else rounded(Color.TRANSPARENT, 18)
+            (t.getChildAt(0) as ImageView).setColorFilter(if (active) MINT else 0xFFD0DAD6.toInt())
+            (t.getChildAt(1) as TextView).setTextColor(if (active) MINT else 0xFFD0DAD6.toInt())
         }
         content.removeAllViews()
-        val v = when (i) { 0 -> gamesView(); 1 -> mapView(); else -> settingsView() }
+        val v = when (i) { 0 -> gamesView(); 1 -> performanceView(); else -> settingsView() }
         content.addView(v, FrameLayout.LayoutParams(M, M))
         updateStatus()
     }
 
     // ---------- tab: game ----------
+
+    private fun sectionTitle(iconText: String, titleText: String): View {
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        row.addView(label(iconText, 27f, MINT, true), LinearLayout.LayoutParams(dp(42), W))
+        row.addView(label(titleText, 22f, Color.WHITE, true))
+        row.addView(View(this).apply { setBackgroundColor(0xFF164B3E.toInt()) },
+            LinearLayout.LayoutParams(0, dp(1), 1f).apply { leftMargin = dp(14) })
+        return row
+    }
+
     private fun gamesView(): View {
-        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val top = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        top.addView(pill("Tambah Game", CARD) { addGame() }.also { it.setIcon(R.drawable.ic_add, MINT, 16) },
-            LinearLayout.LayoutParams(W, W).apply { setMargins(dp(20), dp(4), 0, dp(4)) })
-        if (!Injector.ready) {
-            top.addView(pill("Belum terhubung - pilih cara sambung", 0xFF7A4B06.toInt()) { select(2) }
-                .also { it.setIcon(R.drawable.ic_warning, AMBER, 16) },
-                LinearLayout.LayoutParams(W, W).apply { setMargins(dp(10), dp(4), 0, dp(4)) })
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(10), dp(22), dp(12))
         }
-        col.addView(top)
-        val scroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(20), 0, dp(20), dp(10))
-        }
+        val heading = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        heading.addView(sectionTitle("🎮", "Game Saya"), LinearLayout.LayoutParams(0, W, 1f))
+        heading.addView(pill("+ Tambah Game", 0xFF075C48.toInt()) { addGame() })
+        col.addView(heading, LinearLayout.LayoutParams(M, W).apply { bottomMargin = dp(12) })
+
         val games = Store.games(this)
         if (games.isEmpty()) {
-            row.addView(label("Belum ada game.\nTap \"Tambah Game\" untuk memilih game dari aplikasi yang terpasang.", 14f, MUTED, false))
-        }
-        games.forEach { pkg ->
-            gameCard(pkg)?.let {
-                row.addView(it, LinearLayout.LayoutParams(dp(180), M).apply { rightMargin = dp(14) })
+            val empty = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
+                background = neonBg(0xFF071D17.toInt(), 22)
+                setPadding(dp(20), dp(24), dp(20), dp(24))
             }
+            empty.addView(label("Belum ada game", 19f, Color.WHITE, true))
+            empty.addView(label("Tambahkan game yang sudah terpasang untuk mulai.", 13f, MUTED, false).apply {
+                gravity = Gravity.CENTER; setPadding(0, dp(8), 0, dp(14))
+            })
+            empty.addView(pill("Tambah Game", GREEN) { addGame() })
+            col.addView(empty, LinearLayout.LayoutParams(M, 0, 1f))
+        } else {
+            val scroll = ScrollView(this).apply { isFillViewport = true }
+            val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            games.forEach { pkg ->
+                val pm = packageManager
+                val info = try { pm.getApplicationInfo(pkg, 0) } catch (e: Exception) { null }
+                if (info != null) {
+                    val card = LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                        background = neonBg(0xFF071D18.toInt(), 22)
+                        setPadding(dp(18), dp(12), dp(22), dp(12))
+                        setOnClickListener { launchGame(pkg) }
+                    }
+                    card.addView(ImageView(this).apply {
+                        setImageDrawable(pm.getApplicationIcon(info))
+                        scaleType = ImageView.ScaleType.FIT_CENTER
+                    }, LinearLayout.LayoutParams(dp(82), dp(82)))
+                    val details = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(dp(22), 0, 0, 0)
+                    }
+                    details.addView(label(pm.getApplicationLabel(info).toString(), 21f, Color.WHITE, true))
+                    details.addView(label("✓  Konfigurasi tersedia", 14f, MUTED, true).apply { setPadding(0, dp(5), 0, 0) })
+                    card.addView(details, LinearLayout.LayoutParams(0, W, 1f))
+                    card.addView(label("›", 42f, MINT, false))
+                    list.addView(card, LinearLayout.LayoutParams(M, W).apply { bottomMargin = dp(12) })
+                    val start = pill("▶   Mulai Game", 0xFF008D68.toInt()) { launchGame(pkg) }.apply {
+                        textSize = 20f
+                        setPadding(dp(20), dp(14), dp(20), dp(14))
+                    }
+                    list.addView(start, LinearLayout.LayoutParams(M, W).apply { bottomMargin = dp(16) })
+                }
+            }
+            scroll.addView(list)
+            col.addView(scroll, LinearLayout.LayoutParams(M, 0, 1f))
         }
-        scroll.addView(row, FrameLayout.LayoutParams(W, M))
-        col.addView(scroll, LinearLayout.LayoutParams(M, 0, 1f))
         return col
     }
 
@@ -625,57 +714,224 @@ class MainActivity : Activity() {
             android.app.AppOpsManager.MODE_ALLOWED
     } catch (e: Exception) { false }
 
+
+    private fun infoValue(title: String, value: String): View {
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        row.addView(label(title, 13f, MUTED, false), LinearLayout.LayoutParams(0, W, 1f))
+        row.addView(label(value, 14f, Color.WHITE, true))
+        return row
+    }
+
+    private fun deviceInfoCard(): View {
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = neonBg(0xFF061B15.toInt(), 22)
+            setPadding(dp(18), dp(16), dp(18), dp(16))
+        }
+        card.addView(label("▣  Info Perangkat", 19f, Color.WHITE, true))
+        card.addView(View(this).apply { setBackgroundColor(0xFF087D65.toInt()) },
+            LinearLayout.LayoutParams(M, dp(1)).apply { topMargin = dp(12); bottomMargin = dp(12) })
+        val model = "${Build.MANUFACTURER} ${Build.MODEL}".trim()
+        val abi = Build.SUPPORTED_ABIS.firstOrNull() ?: "Tidak diketahui"
+        val bits = if (Build.SUPPORTED_64_BIT_ABIS.isNotEmpty()) "64-bit" else "32-bit"
+        val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val mi = ActivityManager.MemoryInfo()
+        am.getMemoryInfo(mi)
+        val ram = String.format("%.1f GB", mi.totalMem / 1073741824.0)
+        val stat = StatFs(filesDir.absolutePath)
+        val storage = String.format("%.1f GB", stat.totalBytes / 1073741824.0)
+        listOf(
+            infoValue("Model", model),
+            infoValue("Android", Build.VERSION.RELEASE ?: Build.VERSION.SDK_INT.toString()),
+            infoValue("Arsitektur", "$abi ($bits)"),
+            infoValue("RAM", ram),
+            infoValue("Penyimpanan", storage)
+        ).forEachIndexed { i, v ->
+            card.addView(v, LinearLayout.LayoutParams(M, W).apply { topMargin = if (i == 0) dp(2) else dp(13) })
+            if (i == 2) card.addView(View(this).apply { setBackgroundColor(0xFF087D65.toInt()) },
+                LinearLayout.LayoutParams(M, dp(1)).apply { topMargin = dp(12) })
+        }
+        return card
+    }
+
+    private fun preferenceSwitch(key: String, title: String, desc: String, iconText: String,
+                                 defaultValue: Boolean, explain: String? = null): View {
+        val prefs = getSharedPreferences("performance_ui", Context.MODE_PRIVATE)
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = neonBg(0xFF08231B.toInt(), 20)
+            setPadding(dp(14), dp(10), dp(16), dp(10))
+        }
+        val ico = label(iconText, 28f, MINT, true).apply { gravity = Gravity.CENTER }
+        row.addView(ico, LinearLayout.LayoutParams(dp(72), dp(64)))
+        val textCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, dp(8), 0) }
+        textCol.addView(label(title, 17f, Color.WHITE, true))
+        textCol.addView(label(desc, 12f, MUTED, false).apply { setPadding(0, dp(3), 0, 0) })
+        row.addView(textCol, LinearLayout.LayoutParams(0, W, 1f))
+        val sw = Switch(this).apply {
+            isChecked = prefs.getBoolean(key, defaultValue)
+            showText = false
+            thumbTintList = ColorStateList(
+                arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
+                intArrayOf(Color.WHITE, 0xFFB9C5C0.toInt()))
+            trackTintList = ColorStateList(
+                arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
+                intArrayOf(0xFF00DDA5.toInt(), 0xFF4A5752.toInt()))
+            setOnCheckedChangeListener { _, checked ->
+                prefs.edit().putBoolean(key, checked).apply()
+                if (explain != null) toast(explain)
+            }
+        }
+        row.addView(sw)
+        return row
+    }
+
+    private fun performanceView(): View {
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(18), dp(8), dp(18), dp(8))
+        }
+        val left = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val heading = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        heading.addView(label("Optimisasi Performa", 21f, Color.WHITE, true))
+        heading.addView(View(this).apply {
+            background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
+                intArrayOf(MINT, 0x0000E6B3))
+            cornerRadius = dp(4).toFloat()
+        }, LinearLayout.LayoutParams(0, dp(4), 1f).apply { leftMargin = dp(16) })
+        left.addView(heading, LinearLayout.LayoutParams(M, W).apply { bottomMargin = dp(10) })
+        left.addView(preferenceSwitch("perf_mode", "Mode Performa",
+            "Kurangi animasi antarmuka aplikasi saat bermain.", "ϟ", true),
+            LinearLayout.LayoutParams(M, 0, 1f).apply { bottomMargin = dp(7) })
+        left.addView(preferenceSwitch("cpu_hint", "Optimasi CPU",
+            "Preferensi aplikasi; Android tetap mengatur CPU sistem.", "▦", true,
+            "Android tidak memberi aplikasi biasa kendali langsung atas frekuensi CPU."),
+            LinearLayout.LayoutParams(M, 0, 1f).apply { bottomMargin = dp(7) })
+        left.addView(preferenceSwitch("ram_hint", "Optimasi RAM",
+            "Kelola aktivitas aplikasi; bukan pembersih RAM paksa.", "▤", true,
+            "RAM dikelola otomatis oleh Android. Vortex tidak mematikan aplikasi lain."),
+            LinearLayout.LayoutParams(M, 0, 1f).apply { bottomMargin = dp(7) })
+        left.addView(preferenceSwitch("power_save", "Hemat Daya",
+            "Simpan preferensi untuk mengurangi aktivitas aplikasi.", "▣", false),
+            LinearLayout.LayoutParams(M, 0, 1f))
+        root.addView(left, LinearLayout.LayoutParams(0, M, 2f).apply { rightMargin = dp(10) })
+        root.addView(deviceInfoCard(), LinearLayout.LayoutParams(0, M, 1f).apply { leftMargin = dp(10) })
+        return root
+    }
+
+    private fun settingRow(iconText: String, title: String, desc: String, status: String,
+                           action: String, onClick: () -> Unit): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = neonBg(0xFF08231B.toInt(), 18)
+            setPadding(dp(12), dp(9), dp(16), dp(9))
+        }
+        row.addView(label(iconText, 27f, MINT, true).apply { gravity = Gravity.CENTER },
+            LinearLayout.LayoutParams(dp(64), dp(60)))
+        val details = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, dp(8), 0) }
+        details.addView(label(title, 17f, Color.WHITE, true))
+        details.addView(label(desc, 12f, MUTED, false).apply { setPadding(0, dp(3), 0, 0) })
+        row.addView(details, LinearLayout.LayoutParams(0, W, 1f))
+        val right = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        right.addView(label(status, 12f, MINT, true).apply {
+            background = rounded(0xFF075D48.toInt(), 18)
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+        })
+        right.addView(label("›", 32f, MINT, false).apply { setPadding(dp(10), 0, 0, 0) })
+        row.addView(right)
+        row.setOnClickListener { onClick() }
+        return row
+    }
+
     private fun settingsView(): View {
-        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), dp(16)) }
-        val gap = { LinearLayout.LayoutParams(M, W).apply { topMargin = dp(10) } }
-
-        val on = Injector.ready
-        val big = label(if (on) "Terhubung lewat ${Injector.mode}. Siap main." else "Belum terhubung. Pilih salah satu cara di bawah.",
-            14f, Color.WHITE, true).apply {
-            setPadding(dp(16), dp(12), dp(16), dp(12))
-            background = rounded(if (on) GREEN else CARD, 14)
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), dp(10))
         }
-        big.setIcon(if (on) R.drawable.ic_check else R.drawable.ic_warning, if (on) MINT else AMBER, 18)
-        col.addView(big)
-
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; isBaselineAligned = false }
-        row.addView(adbCard(), LinearLayout.LayoutParams(0, M, 1f).apply { rightMargin = dp(5) })
-        row.addView(shizukuCard(), LinearLayout.LayoutParams(0, M, 1f).apply { leftMargin = dp(5) })
-        col.addView(row, gap())
-
+        val connected = Injector.ready
+        val banner = label(
+            if (connected) "✓  Terhubung lewat ${Injector.mode}. Siap main."
+            else "⚠  Belum terhubung. Pilih metode koneksi.",
+            15f, Color.WHITE, true
+        ).apply {
+            background = rounded(if (connected) 0xFF087451.toInt() else 0xFF684307.toInt(), 18)
+            setPadding(dp(18), dp(12), dp(18), dp(12))
+        }
+        col.addView(banner, LinearLayout.LayoutParams(M, W).apply { bottomMargin = dp(10) })
+        col.addView(label("Koneksi & Izin", 22f, Color.WHITE, true).apply {
+            setPadding(dp(2), dp(4), 0, dp(8))
+        })
+        val shizukuState = ShizukuBridge.state(this)
+        val shizukuStatus = when {
+            Injector.ready && Injector.mode == "Shizuku" -> "Aktif"
+            shizukuState == 0 -> "Belum ada"
+            shizukuState == 1 -> "Tidak berjalan"
+            shizukuState == 2 -> "Perlu izin"
+            else -> "Siap"
+        }
+        col.addView(settingRow("⬡", "Shizuku", "Hubungkan layanan melalui Shizuku.",
+            shizukuStatus, "Kelola") {
+            when (shizukuState) {
+                0 -> startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://shizuku.rikka.app/download/")))
+                1 -> packageManager.getLaunchIntentForPackage(ShizukuBridge.PKG)?.let { startActivity(it) }
+                2 -> ShizukuBridge.requestPermission()
+                else -> {
+                    toast("Menyambung...")
+                    Injector.connect(this, "Shizuku") { connectDone(it) }
+                }
+            }
+        }, LinearLayout.LayoutParams(M, W).apply { bottomMargin = dp(8) })
+        val adbStatus = when {
+            Injector.ready && Injector.mode == "ADB" -> "Terhubung"
+            AdbBackend.paired(this) -> "Dipair"
+            else -> "Belum dipair"
+        }
+        col.addView(settingRow("⌘", "Pairing ADB", "Hubungkan perangkat melalui ADB nirkabel (opsional).",
+            adbStatus, "Pairing") {
+            AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle("Pairing ADB")
+                .setMessage("Aktifkan Debugging nirkabel di Opsi Pengembang, lalu mulai pairing.")
+                .setPositiveButton("Mulai Pairing") { _, _ -> PairHelper.start(this); openWirelessDebug() }
+                .setNeutralButton("Sambungkan") { _, _ ->
+                    toast("Menyambung...")
+                    Injector.connect(this, "ADB") { connectDone(it) }
+                }
+                .setNegativeButton("Batal", null).show()
+        }, LinearLayout.LayoutParams(M, W).apply { bottomMargin = dp(8) })
         val overlayOk = Settings.canDrawOverlays(this)
-        val ov = LinearLayout(this).apply {
+        col.addView(settingRow("▰", "Overlay", "Izin tampil di atas game untuk bubble dan kontrol.",
+            if (overlayOk) "Diizinkan" else "Belum", if (overlayOk) "Aktif" else "Izinkan") {
+            openOverlaySettings()
+        }, LinearLayout.LayoutParams(M, W).apply { bottomMargin = dp(8) })
+        val notifPrefs = getSharedPreferences("vortex_settings", Context.MODE_PRIVATE)
+        val notifRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            background = rounded(CARD, 14); setPadding(dp(16), dp(10), dp(16), dp(10))
+            background = neonBg(0xFF08231B.toInt(), 18)
+            setPadding(dp(12), dp(9), dp(16), dp(9))
         }
-        val ovT = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        ovT.addView(label("Tampilkan di atas aplikasi lain", 14f, Color.WHITE, true).also {
-            it.setIcon(if (overlayOk) R.drawable.ic_check else R.drawable.ic_warning, if (overlayOk) MINT else AMBER, 18)
-        })
-        ovT.addView(label("Untuk bubble, tombol di layar, dan menangkap keyboard/mouse.", 12f, MUTED, false))
-        ov.addView(ovT, LinearLayout.LayoutParams(0, W, 1f))
-        ov.addView(pill(if (overlayOk) "Aktif" else "Izinkan", GREEN) { openOverlaySettings() })
-        col.addView(ov, gap())
-
-        val usageOk = usageAccessOk()
-        val ua = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            background = rounded(CARD, 14); setPadding(dp(16), dp(10), dp(16), dp(10))
+        notifRow.addView(label("♟", 27f, MINT, true).apply { gravity = Gravity.CENTER },
+            LinearLayout.LayoutParams(dp(64), dp(60)))
+        val notifText = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, dp(8), 0) }
+        notifText.addView(label("Notifikasi", 17f, Color.WHITE, true))
+        notifText.addView(label("Aktifkan notifikasi untuk pembaruan dan info penting.", 12f, MUTED, false))
+        notifRow.addView(notifText, LinearLayout.LayoutParams(0, W, 1f))
+        val notif = Switch(this).apply {
+            isChecked = notifPrefs.getBoolean("notifications_enabled", true)
+            setOnCheckedChangeListener { _, checked ->
+                notifPrefs.edit().putBoolean("notifications_enabled", checked).apply()
+                if (Build.VERSION.SDK_INT >= 33 && checked &&
+                    checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED) {
+                    requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 7)
+                }
+            }
         }
-        val uaT = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        uaT.addView(label("Muncul otomatis di game", 14f, Color.WHITE, true).also {
-            it.setIcon(if (usageOk) R.drawable.ic_check else R.drawable.ic_warning, if (usageOk) MINT else AMBER, 18)
-        })
-        uaT.addView(label(if (usageOk) "Logo V muncul saat game dibuka dan hilang saat keluar dari game."
-            else "Aktif sendiri setelah tersambung (Shizuku / debug nirkabel). Atau izinkan manual di sini.", 12f, MUTED, false))
-        ua.addView(uaT, LinearLayout.LayoutParams(0, W, 1f))
-        ua.addView(pill(if (usageOk) "Aktif" else "Izinkan", GREEN) {
-            try { startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) } catch (e: Exception) { toast("Tidak bisa membuka pengaturan") }
-        })
-        col.addView(ua, gap())
-
-        col.addView(label("Tips: F8 di keyboard mematikan mapping. Untuk menyalakan lagi, tap logo V lalu pilih Mapping.", 12f, MUTED, false)
-            .apply { setPadding(0, dp(10), 0, 0) })
+        notifRow.addView(notif)
+        col.addView(notifRow, LinearLayout.LayoutParams(M, W).apply { bottomMargin = dp(8) })
+        col.addView(label("Izin dan status perangkat diperiksa langsung dari Android.", 12f, MUTED, false)
+            .apply { setPadding(dp(4), dp(5), 0, 0) })
         return ScrollView(this).apply { addView(col) }
     }
+
 }
